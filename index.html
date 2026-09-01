@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>V3 ME — Proctored Screening Enterprise</title>
+<script>
+/* Runs before the body is parsed: a candidate link (?token=...) must
+   never show the role-selection menu, even for a single frame. */
+if(new URLSearchParams(location.search).get('token')) document.documentElement.classList.add('tok-boot');
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,700;0,800;1,500&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -64,6 +69,15 @@ body.light::before{display:none}
 /* ═══ SCREENS ═══════════════════════════════════════════════ */
 .scr{display:none;position:relative;z-index:1;min-height:100vh}
 .scr.on{display:flex;flex-direction:column}
+/* Candidate link (?token=...): never let the role-selection menu paint,
+   even for a frame, while the token is being checked. html.tok-boot is
+   set synchronously in <head>, before the body is parsed. */
+html.tok-boot #s-role{display:none!important}
+#s-boot{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px;position:relative;z-index:1}
+#s-boot.on{display:flex}
+#s-boot .boot-spin{width:34px;height:34px;border-radius:50%;border:3px solid rgba(201,168,76,.25);border-top-color:var(--gold);animation:boot-spin 0.9s linear infinite}
+#s-boot p{color:var(--bd-txt,#8a93a6);font-size:.85rem;letter-spacing:.02em}
+@keyframes boot-spin{to{transform:rotate(360deg)}}
 
 /* ═══ TOPBAR ════════════════════════════════════════════════ */
 .topbar{
@@ -670,6 +684,12 @@ body.light .modal{background:#fff}
     <video id="vid-modal-player" controls style="width:100%;border-radius:8px;background:#000;max-height:480px"></video>
     <p style="font-size:.75rem;margin-top:10px;margin-bottom:0;opacity:.6">If video doesn't play, it may still be uploading. Check the Drive link once processing is complete.</p>
   </div>
+</div>
+
+<!-- ══ CANDIDATE LINK BOOT SCREEN ═══════════════════════ -->
+<div id="s-boot" class="scr">
+  <div class="boot-spin"></div>
+  <p>Preparing your secure exam session…</p>
 </div>
 
 <!-- ══ ROLE SELECT ═══════════════════════════════════════ -->
@@ -3944,12 +3964,18 @@ async function pushTokenRemote(tok){
 }
 async function fetchTokenRemote(id){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
+  // Never let a candidate sit on the loading screen for a slow/unreachable
+  // network — 2.5s is enough for the status check, but the exam always
+  // starts on time using the token's own embedded payload either way.
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),2500);
   try{
-    const resp=await fetch(CFG.GS_ENDPOINT+'?action=load_token&token='+encodeURIComponent(id),{method:'GET',redirect:'follow'});
+    const resp=await fetch(CFG.GS_ENDPOINT+'?action=load_token&token='+encodeURIComponent(id),{method:'GET',redirect:'follow',signal:ctrl.signal});
     const text=await resp.text();
     const data=JSON.parse(text);
     if(data?.ok&&data.token)return data.token;
-  }catch(e){ /* not deployed yet / offline — fall back to the token's own embedded payload */ }
+  }catch(e){ /* not deployed yet / offline / timed out — fall back to the token's own embedded payload */ }
+  finally{ clearTimeout(timer); }
   return null;
 }
 
@@ -4986,6 +5012,7 @@ function showAIToast(msg,severity){
 function getTokenFromURL(){return new URLSearchParams(location.search).get('token')||null;}
 async function initTokenMode(){
   const tokId=getTokenFromURL();if(!tokId)return;
+  goto('s-boot'); // belt-and-suspenders — html.tok-boot CSS already hides s-role
   const result=await validateToken(tokId);
   if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
   if(result.err)return showTokenError(result.msg);
