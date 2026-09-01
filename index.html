@@ -3796,7 +3796,8 @@ function addQ(key,pool){
 }
 
 /* Master token management — full CRUD incl delete */
-function masterRefreshTokens(){
+async function masterRefreshTokens(){
+  await syncTokStoreFromRemote();
   const store=getTokStore();
   const tokens=Object.values(store);
   // Populate mf-disc select from DISC_MAP
@@ -3925,7 +3926,7 @@ async function checkOperatorGate(){
   const v=$('operator-gate-pass').value;
   if(await verifyPassRemote('hr',v)){
     hideErr('operator-gate-err');$('operator-gate-pass').value='';
-    refreshDashboard();goto('s-operator');
+    goto('s-operator');await refreshDashboard();
   }else{showErr('operator-gate-err','Incorrect HR password.');$('operator-gate-pass').value='';}
 }
 
@@ -3983,6 +3984,31 @@ async function fetchTokenRemote(id){
   }catch(e){ /* not deployed yet / offline / timed out — fall back to the token's own embedded payload */ }
   finally{ clearTimeout(timer); }
   return null;
+}
+async function fetchAllTokensRemote(){
+  if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
+  try{
+    const resp=await fetch(CFG.GS_ENDPOINT+'?action=load_tokens',{method:'GET',redirect:'follow'});
+    const text=await resp.text();
+    const data=JSON.parse(text);
+    if(data?.ok&&data.tokens)return data.tokens;
+  }catch(e){ /* not deployed yet / offline — dashboard falls back to this device's own local view */ }
+  return null;
+}
+/* Pulls every candidate's live status (revoked/in-progress/used) from Apps
+   Script into this browser's local token store, so the Operator/Master
+   dashboards show what's actually happening on candidates' own devices —
+   not just tokens this browser itself created or touched. Local-only
+   fields (like a same-device _snap report) are preserved; remote status
+   fields win since Apps Script is the cross-device source of truth. */
+async function syncTokStoreFromRemote(){
+  const remote=await fetchAllTokensRemote();
+  if(!remote)return;
+  const local=getTokStore();
+  for(const id in remote){
+    local[id]={...(local[id]||{}),...remote[id]};
+  }
+  saveTokStore(local);
 }
 
 function createToken(params){
@@ -4164,7 +4190,8 @@ function copyAllLinks(){
 }
 
 /* Dashboard */
-function refreshDashboard(){
+async function refreshDashboard(){
+  await syncTokStoreFromRemote();
   const store=getTokStore();
   const toks=Object.values(store).filter(t=>t.status!=='deleted');
   const counts={active:0,inprogress:0,used:0,revoked:0};
