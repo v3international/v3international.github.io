@@ -3883,6 +3883,7 @@ function renderMasterTokTable(toks){
 }
 function deleteToken(id){
   const s=getTokStore();if(s[id]){s[id].status='deleted';}saveTokStore(s);
+  if(s[id]) pushTokenRemote(s[id]);
 }
 function deleteBulkRevoked(){
   if(!confirm('Are you sure you want to permanently delete these token logs? This cannot be undone.'))return;
@@ -3906,18 +3907,78 @@ function checkOperatorGate(){
 const TOK_KEY='v3_tokens';
 function getTokStore(){try{return JSON.parse(localStorage.getItem(TOK_KEY)||'{}');}catch(e){return {};}}
 function saveTokStore(s){localStorage.setItem(TOK_KEY,JSON.stringify(s));}
+
+/* ── SELF-CONTAINED TOKEN ENCODING ──────────────────────────────────
+   The old token was just a random id looked up in this browser's
+   localStorage — so a link opened on any OTHER device (every real
+   candidate) found nothing and was rejected. Now the token id itself
+   carries the candidate's exam payload (base64url JSON + a tamper
+   checksum), so the link works the instant a candidate opens it,
+   anywhere, with zero dependency on the device that created it.
+   The creating device still keeps its own local copy — and best-effort
+   pushes it to Apps Script (CFG.GS_ENDPOINT) — purely so the operator's
+   dashboard can track revoke/used/in-progress status.
+──────────────────────────────────────────────────────────────────── */
+function b64uEnc(str){return btoa(unescape(encodeURIComponent(str))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function b64uDec(str){str=str.replace(/-/g,'+').replace(/_/g,'/');while(str.length%4)str+='=';return decodeURIComponent(escape(atob(str)));}
+function tokChecksum(str){ // short non-cryptographic tamper/corruption check (FNV-1a)
+  let h=0x811c9dc5;
+  for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=(h*0x01000193)>>>0;}
+  return h.toString(36);
+}
+function encodeTokenPayload(p){const json=JSON.stringify(p);return 'T1.'+b64uEnc(json)+'.'+tokChecksum(json);}
+function decodeTokenPayload(id){
+  if(typeof id!=='string')return null;
+  const parts=id.split('.');
+  if(parts.length!==3||parts[0]!=='T1')return null;
+  try{
+    const json=b64uDec(parts[1]);
+    if(tokChecksum(json)!==parts[2])return null; // tampered / corrupted link
+    return JSON.parse(json);
+  }catch(e){return null;}
+}
+async function pushTokenRemote(tok){
+  if(!tok||!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return;
+  const {_snap,...slim}=tok; // exam snapshot stays local — only status/id sync remotely
+  try{ await gsPost({action:'save_token',token:slim}); }catch(e){ /* offline — status stays local-only */ }
+}
+async function fetchTokenRemote(id){
+  if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
+  try{
+    const resp=await fetch(CFG.GS_ENDPOINT+'?action=load_token&token='+encodeURIComponent(id),{method:'GET',redirect:'follow'});
+    const text=await resp.text();
+    const data=JSON.parse(text);
+    if(data?.ok&&data.token)return data.token;
+  }catch(e){ /* not deployed yet / offline — fall back to the token's own embedded payload */ }
+  return null;
+}
+
 function createToken(params){
-  const id=randHex(16);
-  const store=getTokStore();
   const hrs=Math.max(1,params.expiryHrs||24);
   const {expiryHrs:_,...rest}=params;  // strip expiryHrs from stored token
-  store[id]={id,...rest,created:new Date().toISOString(),
-    expires:new Date(Date.now()+hrs*3600000).toISOString(),status:'active'};
-  saveTokStore(store);return id;
+  const created=new Date().toISOString();
+  const expires=new Date(Date.now()+hrs*3600000).toISOString();
+  const id=encodeTokenPayload({...rest,created,expires});
+  const store=getTokStore();
+  store[id]={id,...rest,created,expires,status:'active'};
+  saveTokStore(store);
+  pushTokenRemote(store[id]); // best-effort — lets the operator track status from any device
+  return id;
 }
-function validateToken(id){
-  const store=getTokStore();const tok=store[id];
+async function validateToken(id){
+  // 1. Same-device fast path (operator testing their own link)
+  const store=getTokStore();
+  let tok=store[id];
+  // 2. Cross-device path — decode the payload embedded in the link itself
+  if(!tok){
+    const embedded=decodeTokenPayload(id);
+    if(embedded)tok={id,...embedded,status:'active'};
+  }
   if(!tok)return null;
+  // 3. Best-effort remote status check (picks up revoked/used set from another device)
+  const remote=await fetchTokenRemote(id);
+  if(remote)tok={...tok,...remote};
+
   if(tok.status==='revoked')return{err:'REVOKED',msg:'This link has been revoked by an administrator.'};
   if(tok.status==='used')return{err:'USED',msg:'This link has already been used and cannot be reused.'};
   if(tok.status==='deleted')return{err:'DELETED',msg:'This link is no longer valid.'};
@@ -3925,13 +3986,19 @@ function validateToken(id){
   return{ok:true,tok};
 }
 function lockToken(id){
-  const s=getTokStore();if(s[id]){s[id].status='inprogress';s[id].startedAt=new Date().toISOString();}saveTokStore(s);
+  const s=getTokStore();
+  let tok=s[id];
+  if(!tok){const embedded=decodeTokenPayload(id);if(embedded)tok={id,...embedded,status:'active'};}
+  if(tok){tok.status='inprogress';tok.startedAt=new Date().toISOString();s[id]=tok;saveTokStore(s);pushTokenRemote(tok);}
 }
 function completeToken(id){
   const s=getTokStore();
-  if(s[id]){
-    s[id].status      = 'used';
-    s[id].completedAt = new Date().toISOString();
+  let tok=s[id];
+  if(!tok){const embedded=decodeTokenPayload(id);if(embedded)tok={id,...embedded,status:'active'};}
+  if(tok){
+    s[id]=tok;
+    tok.status      = 'used';
+    tok.completedAt = new Date().toISOString();
     // Store exam snapshot so operators can view the report from the audit log
     s[id]._snap = {
       name:      S.name,
@@ -3956,6 +4023,7 @@ function completeToken(id){
     };
   }
   saveTokStore(s);
+  if(tok) pushTokenRemote(tok);
 }
 
 // ── GLOBAL: tracks which screen to return to from s-report ──────────────
@@ -4016,6 +4084,7 @@ function reportGoBack(){
 
 function revokeToken(id){
   const s=getTokStore();if(s[id])s[id].status='revoked';saveTokStore(s);refreshDashboard();
+  if(s[id]) pushTokenRemote(s[id]);
 }
 
 /* Operator token gen */
@@ -4915,9 +4984,9 @@ function showAIToast(msg,severity){
 
 /* ═══ TOKEN MODE (online link) ════════════════════════ */
 function getTokenFromURL(){return new URLSearchParams(location.search).get('token')||null;}
-function initTokenMode(){
+async function initTokenMode(){
   const tokId=getTokenFromURL();if(!tokId)return;
-  const result=validateToken(tokId);
+  const result=await validateToken(tokId);
   if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
   if(result.err)return showTokenError(result.msg);
   const tok=result.tok;
@@ -4978,7 +5047,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   updateThemeBtn();
   renderDivCards();
   refreshAllDiscSelects();
-  initTokenMode();
+  await initTokenMode();
   setTimeout(updateEpDisplay, 500);
 });
 
