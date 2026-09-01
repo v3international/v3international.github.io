@@ -777,7 +777,7 @@ body.light .modal{background:#fff}
     <div class="tb-r">
       <button class="icon-btn theme-btn-icon" onclick="toggleTheme()">☀️</button>
       <div class="tb-sep"></div>
-      <button class="tb-btn tb-btn-ghost" onclick="goto('s-role')">← Exit</button>
+      <button class="tb-btn tb-btn-ghost" onclick="signOutMaster()">← Exit</button>
     </div>
   </nav>
   <div class="editor-shell">
@@ -1181,7 +1181,7 @@ body.light .modal{background:#fff}
       <button class="icon-btn" onclick="refreshDashboard()" title="Refresh">↻</button>
       <button class="icon-btn theme-btn-icon" onclick="toggleTheme()">☀️</button>
       <div class="tb-sep"></div>
-      <button class="tb-btn tb-btn-ghost" onclick="goto('s-role')">← Exit</button>
+      <button class="tb-btn tb-btn-ghost" onclick="signOutOperator()">← Exit</button>
     </div>
   </nav>
   <div class="dash-shell">
@@ -1265,20 +1265,9 @@ body.light .modal{background:#fff}
             <div style="font-size:.7rem;color:var(--muted);margin-top:3px">Default: 24 hrs · Max: 8760 (1 year)</div>
           </div>
           <span class="err" id="tp-err" style="margin-bottom:2px"></span>
-          <button class="btn btn-gold btn-w100" onclick="generateBulkTokens()">Generate Links →</button>
+          <button class="btn btn-gold btn-w100" id="tp-gen-btn" onclick="generateBulkTokens()">Generate Links →</button>
           <div class="bulk-links" id="bulk-links"></div>
           <button class="btn btn-ghost btn-sm btn-w100" onclick="copyAllLinks()" style="margin-top:5px">📋 Copy All Links</button>
-        </div>
-        <div class="panel-hdr" style="border-top:1px solid var(--card-br)">
-          <div class="panel-hdr-title">🔒 Unlock Report Card</div>
-          <div class="panel-hdr-sub">Enter admin passkey to view last report</div>
-        </div>
-        <div class="panel-body">
-          <div class="tp-fld"><label>Admin Passkey</label>
-            <input type="password" id="op-admin-pass" placeholder="Admin password" onkeydown="if(event.key==='Enter')opUnlockReport()">
-            <span class="err" id="op-admin-err"></span>
-          </div>
-          <button class="btn btn-gold btn-w100" onclick="opUnlockReport()">Unlock Report →</button>
         </div>
       </div>
       <!-- Right: Log with filters -->
@@ -1680,6 +1669,7 @@ function updateThemeBtn(){
     // password with Apps Script — no local comparison needed here.
     masterUnlocked=true; console.log('DevTools unlocked.');
   };
+  window.lockDevTools=function(){ masterUnlocked=false; };
   document.addEventListener('contextmenu',e=>{
     if(!masterUnlocked&&!['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)){ e.preventDefault(); showProtectToast(); }
   });
@@ -3069,14 +3059,28 @@ function goRole(role){
 async function checkEditorGate(){
   const v=$('editor-gate-pass').value;
   if(await verifyPassRemote('master',v)){
-    _masterPassCache=v; // kept in memory only, for this tab, to authorize password rotation below
-    hideErr('editor-gate-err'); $('editor-gate-pass').value='';
-    buildEditorUI(); goto('s-editor');
-    window.masterUnlocked=true; // unlock devtools for master
-    if(typeof unlockDevTools==='function') unlockDevTools();
+    enterMasterEditor(v);
+    $('editor-gate-pass').value='';
   }else{
     showErr('editor-gate-err','Incorrect master password.'); $('editor-gate-pass').value='';
   }
+}
+/* Master/Operator sessions survive a page refresh (sessionStorage — cleared
+   when the tab/browser closes, never persisted beyond that). Test Taker
+   and candidate token links deliberately do NOT use this: those must
+   always re-authenticate / re-validate fresh, every time. */
+function enterMasterEditor(pass){
+  _masterPassCache=pass; // kept for this tab only, to authorize password rotation in Credentials
+  sessionStorage.setItem('v3_master_session',pass);
+  hideErr('editor-gate-err');
+  buildEditorUI(); goto('s-editor');
+  if(typeof unlockDevTools==='function') unlockDevTools();
+}
+function signOutMaster(){
+  sessionStorage.removeItem('v3_master_session');
+  _masterPassCache='';
+  if(typeof lockDevTools==='function') lockDevTools();
+  goto('s-role');
 }
 function buildEditorUI(){ buildQBEditor(); renderDivEditor(); renderCredPanel(); }
 
@@ -3817,7 +3821,7 @@ async function masterRefreshTokens(){
   const hasFilter=[$('mf-search'),$('mf-disc'),$('mf-status'),$('mf-sen')]
     .some(el=>el&&el.value.trim());
   if(hasFilter) masterApplyFilters();
-  else { renderMasterTokenTable(tokens); renderMasterTokTable(tokens); }
+  else renderMasterTokTable(tokens);
 }
 
 /* ── MASTER TOKEN FILTERS ─────────────────────────────── */
@@ -3826,7 +3830,7 @@ function masterApplyFilters(){
   const disc   = $('mf-disc')?.value||'';
   const status = $('mf-status')?.value||'';
   const sen    = $('mf-sen')?.value||'';
-  const all    = getAllTokens();
+  const all    = Object.values(getTokStore());
   const filtered = all.filter(t=>{
     if(search && !JSON.stringify(t).toLowerCase().includes(search)) return false;
     if(disc   && t.discKey !== disc) return false;
@@ -3834,46 +3838,13 @@ function masterApplyFilters(){
     if(sen    && t.seniority !== sen) return false;
     return true;
   });
-  renderMasterTokenTable(filtered);
+  renderMasterTokTable(filtered);
 }
 function masterClearFilters(){
   ['mf-search','mf-disc','mf-status','mf-sen'].forEach(id=>{
     const el=$(id);if(el){el.value='';}
   });
   masterRefreshTokens();
-}
-function renderMasterTokenTable(tokens){
-  // Reuse operator's renderTokLog or render inline
-  const el=$('master-tok-body');if(!el)return;
-  if(!tokens.length){
-    el.innerHTML='<tr><td colspan="9" style="padding:16px;text-align:center;color:var(--muted)">No tokens match the filter.</td></tr>';
-    return;
-  }
-  // Find the disc label from DISC_MAP
-  const discLabel=key=>{
-    for(const[div,discs]of Object.entries(DISC_MAP)){
-      const d=discs.find(([k])=>k===key);
-      if(d)return d[1];
-    }
-    return key;
-  };
-  el.innerHTML=tokens.map(t=>{
-    const sc=t.status==='active'?'#1a6b3c':t.status==='completed'?'#0A1628':'#8B2020';
-    const created=t.createdAt?new Date(t.createdAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—';
-    return `<tr>
-      <td style="font-family:var(--mono);font-size:.72rem;color:var(--hd);font-weight:700">${escH(t.id||'')}</td>
-      <td>${escH(t.candidateName||'—')}</td>
-      <td style="font-size:.78rem">${escH(discLabel(t.discKey||''))}</td>
-      <td style="font-size:.78rem">${escH(t.seniority==='entry'?'Entry':'Senior')}</td>
-      <td style="font-size:.78rem">${created}</td>
-      <td><span style="color:${sc};font-weight:700;font-size:.78rem;text-transform:capitalize">${escH(t.status||'')}</span></td>
-      <td style="font-family:var(--mono);font-size:.68rem;color:var(--muted)">${t.score!==undefined?t.score+'/'+t.total:'—'}</td>
-      <td>
-        ${t.status==='active'?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');setTimeout(masterRefreshTokens,200)">Revoke</button>`:''}
-        ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px" onclick="viewTokenReport('${t.id}','s-editor')">📄 View Report</button>`:''}
-      </td>
-    </tr>`;
-  }).join('');
 }
 
 function renderMasterTokTable(toks){
@@ -3903,7 +3874,7 @@ function renderMasterTokTable(toks){
       <td>
         ${canDelete?`<button class="btn btn-xs" style="background:rgba(139,32,32,.18);color:var(--fail);border:1px solid rgba(139,32,32,.3)" onclick="deleteToken('${t.id}');masterRefreshTokens()">Delete</button>`:'—'}
         <button class="btn btn-xs btn-ghost" style="margin-left:4px" onclick="copyText('${url}')">Copy</button>
-        ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px;display:block" onclick="viewTokenReport('${t.id}','s-editor')">📄 View Report</button>`:''}
+        ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px;display:block" onclick="openSheetRow('${escH(t.email||'')}')">📊 Open in Sheet</button>`:''}
       </td>
     </tr>`;
   }).join('');
@@ -3926,8 +3897,16 @@ async function checkOperatorGate(){
   const v=$('operator-gate-pass').value;
   if(await verifyPassRemote('hr',v)){
     hideErr('operator-gate-err');$('operator-gate-pass').value='';
-    goto('s-operator');await refreshDashboard();
+    enterOperatorDashboard();
   }else{showErr('operator-gate-err','Incorrect HR password.');$('operator-gate-pass').value='';}
+}
+function enterOperatorDashboard(){
+  sessionStorage.setItem('v3_operator_session','1');
+  goto('s-operator');refreshDashboard();
+}
+function signOutOperator(){
+  sessionStorage.removeItem('v3_operator_session');
+  goto('s-role');
 }
 
 /* Token store */
@@ -3965,23 +3944,24 @@ function decodeTokenPayload(id){
   }catch(e){return null;}
 }
 async function pushTokenRemote(tok){
-  if(!tok||!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return;
+  if(!tok||!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return false;
   const {_snap,...slim}=tok; // exam snapshot stays local — only status/id sync remotely
-  try{ await gsPost({action:'save_token',token:slim}); }catch(e){ /* offline — status stays local-only */ }
+  const resp=await gsPost({action:'save_token',token:slim});
+  return !!resp?.ok;
 }
 async function fetchTokenRemote(id){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
-  // Never let a candidate sit on the loading screen for a slow/unreachable
-  // network — 2.5s is enough for the status check, but the exam always
-  // starts on time using the token's own embedded payload either way.
+  // Links are short opaque IDs resolved via Apps Script, so this call is
+  // load-bearing (not just a nice-to-have status check) — give it a
+  // generous window for a cold-started script before giving up.
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),2500);
+  const timer=setTimeout(()=>ctrl.abort(),8000);
   try{
     const resp=await fetch(CFG.GS_ENDPOINT+'?action=load_token&token='+encodeURIComponent(id),{method:'GET',redirect:'follow',signal:ctrl.signal});
     const text=await resp.text();
     const data=JSON.parse(text);
     if(data?.ok&&data.token)return data.token;
-  }catch(e){ /* not deployed yet / offline / timed out — fall back to the token's own embedded payload */ }
+  }catch(e){ /* offline / timed out / Apps Script unreachable */ }
   finally{ clearTimeout(timer); }
   return null;
 }
@@ -4011,31 +3991,35 @@ async function syncTokStoreFromRemote(){
   saveTokStore(local);
 }
 
-function createToken(params){
+async function createToken(params){
   const hrs=Math.max(1,params.expiryHrs||24);
   const {expiryHrs:_,...rest}=params;  // strip expiryHrs from stored token
   const created=new Date().toISOString();
   const expires=new Date(Date.now()+hrs*3600000).toISOString();
-  const id=encodeTokenPayload({...rest,created,expires});
+  const id=randHex(8); // short link — resolved via Apps Script, so it stays short and shareable
+  const tok={id,...rest,created,expires,status:'active'};
   const store=getTokStore();
-  store[id]={id,...rest,created,expires,status:'active'};
+  store[id]=tok;
   saveTokStore(store);
-  pushTokenRemote(store[id]); // best-effort — lets the operator track status from any device
-  return id;
+  const synced=await pushTokenRemote(tok); // required now — a short id carries no data of its own
+  return {id,synced};
 }
 async function validateToken(id){
   // 1. Same-device fast path (operator testing their own link)
   const store=getTokStore();
   let tok=store[id];
-  // 2. Cross-device path — decode the payload embedded in the link itself
+  // 2. Legacy long-format links (issued before short links) embed their own
+  //    payload and decode with zero network dependency — kept for backward
+  //    compatibility with any link sent out under the old format.
   if(!tok){
     const embedded=decodeTokenPayload(id);
     if(embedded)tok={id,...embedded,status:'active'};
   }
-  if(!tok)return null;
-  // 3. Best-effort remote status check (picks up revoked/used set from another device)
+  // 3. Short links: resolve against Apps Script — this is the primary path
+  //    for every link issued today, not just a status refresh.
   const remote=await fetchTokenRemote(id);
-  if(remote)tok={...tok,...remote};
+  if(remote)tok={...(tok||{}),...remote};
+  if(!tok)return null;
 
   if(tok.status==='revoked')return{err:'REVOKED',msg:'This link has been revoked by an administrator.'};
   if(tok.status==='used')return{err:'USED',msg:'This link has already been used and cannot be reused.'};
@@ -4088,51 +4072,24 @@ function completeToken(id){
 let _reportReturnScreen = 's-role';
 
 // ── View a specific token's report card ─────────────────────────────────
-async function viewTokenReport(tokenId, returnScreen){
-  _reportReturnScreen = returnScreen || 's-role';
-  const store = getTokStore();
-  const tok   = store[tokenId];
-  if(!tok){ showToast('Token not found.','err'); return; }
-  if(tok.status !== 'used'){ showToast('No completed exam for this token.','warn'); return; }
-
-  const passkey = window.prompt('Enter Admin passkey to view Report Card:');
-  if(passkey === null) return;                          // cancelled
-  if(!(await verifyPassRemote('admin',(passkey||'').trim()))){
-    showToast('Incorrect passkey.','err'); return;
+// Results live in the Google Sheet (score/pass-fail/PDF report/proctor
+// video are all written there by the exam submission itself) — this just
+// jumps straight to that candidate's row instead of trying to rebuild a
+// report in-app, which only ever worked when viewed from the exact same
+// browser that ran the exam.
+async function openSheetRow(email){
+  if(!email){ showToast('This candidate has no email on file.','warn'); return; }
+  if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR')){
+    showToast('Apps Script not connected — cannot look up the Sheet.','err'); return;
   }
-
-  // Restore S from the stored snapshot
-  const snap = tok._snap;
-  if(!snap){ showToast('No exam snapshot stored for this token.\nTake a fresh exam to generate a report.','warn'); return; }
-
-  S.name       = snap.name       || tok.name  || '';
-  S.email      = snap.email      || tok.email || '';
-  S.phone      = snap.phone      || '';
-  S.position   = snap.position   || '';
-  S.discKey    = snap.discKey    || tok.discKey || '';
-  S.discipline = snap.discipline || '';
-  S.division   = snap.division   || '';
-  S.seniority  = snap.seniority  || tok.seniority || '';
-  S.qs         = snap.qs         || [];
-  S.answers    = snap.answers    || {};
-  S.score      = snap.score      ?? 0;
-  S.total      = snap.total      ?? (snap.qs?.length || 20);
-  S.pct        = snap.pct        ?? 0;
-  S.passed     = snap.passed     ?? false;
-  S.blurCount  = snap.blurCount  ?? 0;
-  S.forensics  = snap.forensics  || [];
-  S.startTs    = snap.startTs    || null;
-  S.endTs      = snap.endTs      || null;
-  S.videoUploadUrl = snap.videoUrl || '';
-
+  showToast('Looking up the Sheet row…','ok');
   try{
-    buildReport();
-  } catch(e){
-    showToast('Report build error: ' + e.message, 'err');
-    console.error('viewTokenReport buildReport error:', e);
-    return;
-  }
-  goto('s-report');
+    const resp=await fetch(CFG.GS_ENDPOINT+'?action=find_row&email='+encodeURIComponent(email),{method:'GET',redirect:'follow'});
+    const text=await resp.text();
+    const data=JSON.parse(text);
+    if(data?.ok&&data.rowUrl){ window.open(data.rowUrl,'_blank'); }
+    else { showToast('No submitted result found in the Sheet yet for this candidate.','warn'); }
+  }catch(e){ showToast('Could not reach Apps Script to look up the Sheet.','err'); }
 }
 
 // ── Navigate back from s-report to the correct dashboard ────────────────
@@ -4152,7 +4109,7 @@ function tpSen(v){
   $('tp-sen-e').classList.toggle('on',v==='entry');
   $('tp-sen-s').classList.toggle('on',v==='senior');
 }
-function generateBulkTokens(){
+async function generateBulkTokens(){
   const name=$('tp-name').value.trim(),email=$('tp-email').value.trim(),
         phone=$('tp-phone')?.value.trim()||'',pos=$('tp-pos')?.value.trim()||'',
         discKey=$('tp-disc').value,qty=Math.min(parseInt($('tp-qty').value)||1,100);
@@ -4164,13 +4121,23 @@ function generateBulkTokens(){
   const isPlaceholder = !CFG.BASE_URL || CFG.BASE_URL==='YOUR_GOOGLE_WEB_APP_URL_HERE' || CFG.BASE_URL.trim()==='';
   if(isPlaceholder) showToast('⚠️ Set CFG.BASE_URL to your Google Web App URL so candidates get a working link.','warn');
   const base = isPlaceholder ? location.href.split('?')[0] : CFG.BASE_URL.trim();
+  const btn=$('tp-gen-btn');
+  if(btn){btn.disabled=true;}
   const links=[];
+  let failedSyncs=0;
+  // Sequential, not parallel — every link is saved into one shared file on
+  // Apps Script, so concurrent writes could clobber each other.
   for(let i=0;i<qty;i++){
+    if(btn)btn.textContent=qty>1?`Generating ${i+1}/${qty}…`:'Generating…';
     const cname=qty>1?`${name} (${i+1})`:name;
-    const id=createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs});
+    const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs});
+    if(!synced)failedSyncs++;
     links.push({id,url:`${base}?token=${id}`,name:cname});
   }
-  renderBulkLinks(links);refreshDashboard();
+  if(btn){btn.disabled=false;btn.textContent='Generate Links →';}
+  renderBulkLinks(links);
+  await refreshDashboard();
+  if(failedSyncs)showToast(`⚠️ ${failedSyncs} link(s) didn't sync to Apps Script — they'll only work on this device until you're back online. Use ☁ Force Push or regenerate once connected.`,'warn');
 }
 function renderBulkLinks(links){
   const el=$('bulk-links');if(!el)return;
@@ -4244,18 +4211,12 @@ function renderTokLog(toks){
       <td style="font-family:var(--mono);font-size:.66rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
       <td>
         ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');refreshDashboard()">Revoke</button>`:''}
-        ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px" onclick="viewTokenReport('${t.id}','s-operator')">📄 View Report</button>`:''}
+        ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px" onclick="openSheetRow('${escH(t.email||'')}')">📊 Open in Sheet</button>`:''}
         ${!canRevoke&&t.status!=='used'?'—':''}
       </td>
     </tr>`;
   }).join('');
 }
-async function opUnlockReport(){
-  const v=$('op-admin-pass').value;
-  if(await verifyPassRemote('admin',v)){hideErr('op-admin-err');buildReport();goto('s-report');}
-  else showErr('op-admin-err','Incorrect passkey.');
-}
-
 /* ═══════════════════════════════════════════════════════
    TIER 3 — TAKER SETUP
 ═══════════════════════════════════════════════════════ */
@@ -4747,19 +4708,6 @@ async function generateAndUploadPdf(){
   }
 }
 
-/* Admin unlock */
-async function unlockReport(){
-  const v=($('admin-pass')?.value||'').trim();
-  if(await verifyPassRemote('admin',v)){
-    hideErr('admin-err');
-    try{ buildReport(); }
-    catch(e){ showErr('admin-err','Report build error: '+e.message); return; }
-    goto('s-report');
-  } else {
-    showErr('admin-err','Incorrect passkey.');
-  }
-}
-
 /* ═══════════════════════════════════════════════════════
    3-PAGE REPORT BUILDER (NO DIFFICULTY BADGES)
 ═══════════════════════════════════════════════════════ */
@@ -5075,6 +5023,10 @@ async function initTokenMode(){
   if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
   if(result.err)return showTokenError(result.msg);
   const tok=result.tok;
+  // Cache the resolved token locally so lockToken()/completeToken() (which
+  // look it up by id) find it — a short link has no local copy yet on a
+  // brand-new device even though validateToken() just resolved it fine.
+  const _s=getTokStore();_s[tokId]=tok;saveTokStore(_s);
   lockToken(tokId);S.tokenId=tokId;
   const bank=QUESTION_BANK[tok.discKey];
   if(!bank)return showTokenError('Invalid discipline. Contact HR.');
@@ -5132,9 +5084,19 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   updateThemeBtn();
   renderDivCards();
   refreshAllDiscSelects();
-  await initTokenMode();
+  if(getTokenFromURL()) await initTokenMode();
+  else restoreStaffSession();
   setTimeout(updateEpDisplay, 500);
 });
+/* Master/Operator: restore an existing session after a page refresh, so
+   the ↻ refresh / a hard reload doesn't sign them out. Test Taker and
+   candidate token links never write a session here, so they're
+   unaffected — always fresh, on purpose. */
+function restoreStaffSession(){
+  const masterPass=sessionStorage.getItem('v3_master_session');
+  if(masterPass){ enterMasterEditor(masterPass); return; }
+  if(sessionStorage.getItem('v3_operator_session')){ enterOperatorDashboard(); }
+}
 
 
 </script>
