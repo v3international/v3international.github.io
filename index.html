@@ -916,7 +916,7 @@ body.light .modal{background:#fff}
         <div class="editor-card">
           <div class="ec-hdr"><div class="ec-hdr-title">System Passwords — Master Only</div></div>
           <div class="ec-body">
-            <p style="margin-bottom:16px">Changes apply for this browser session only. To make permanent, update <code style="font-family:var(--mono);font-size:.82rem;background:var(--surface);padding:1px 6px;border-radius:4px">CFG</code> in the HTML source.</p>
+            <p style="margin-bottom:16px">Passwords are verified and stored on your Apps Script backend, not in this page — updates below take effect immediately on every device, for every candidate and HR link, with no code changes needed.</p>
             <div class="cred-row">
               <div class="cred-label">HR Password</div>
               <input class="cred-val" id="new-hr-pass" type="text" placeholder="New HR password" autocomplete="off">
@@ -1631,9 +1631,10 @@ body.light .modal{background:#fff}
    CONFIG
 ═══════════════════════════════════════════════════════ */
 const CFG = {
-  HR_PASS:     'HRPassword2026',
-  ADMIN_PASS:  'Admin2026',
-  MASTER_PASS: 'MasterV3!2026',
+  // HR_PASS / ADMIN_PASS / MASTER_PASS used to live here as plain text —
+  // anyone could read them via the browser's "view source". They are now
+  // verified server-side by Apps Script (action=verify_pass) and stored
+  // only in that script's Script Properties, never shipped to the client.
   EXAM_SECS:   1800,
   PASS_PCT:    70,
   EXAM_Q:      20,        // questions drawn per session (max 60)
@@ -1674,8 +1675,10 @@ function updateThemeBtn(){
 /* ═══ SOURCE PROTECTION ════════════════════════════════ */
 (function setupProtection(){
   let masterUnlocked=false;
-  window.unlockDevTools=function(pw){
-    if(pw===CFG.MASTER_PASS){ masterUnlocked=true; console.log('DevTools unlocked.'); }
+  window.unlockDevTools=function(){
+    // Called only after checkEditorGate() has already verified the Master
+    // password with Apps Script — no local comparison needed here.
+    masterUnlocked=true; console.log('DevTools unlocked.');
   };
   document.addEventListener('contextmenu',e=>{
     if(!masterUnlocked&&!['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)){ e.preventDefault(); showProtectToast(); }
@@ -3063,13 +3066,14 @@ function goRole(role){
 /* ═══════════════════════════════════════════════════════
    TIER 1 — EDITOR / MASTER ADMIN
 ═══════════════════════════════════════════════════════ */
-function checkEditorGate(){
+async function checkEditorGate(){
   const v=$('editor-gate-pass').value;
-  if(v===CFG.MASTER_PASS){
+  if(await verifyPassRemote('master',v)){
+    _masterPassCache=v; // kept in memory only, for this tab, to authorize password rotation below
     hideErr('editor-gate-err'); $('editor-gate-pass').value='';
     buildEditorUI(); goto('s-editor');
     window.masterUnlocked=true; // unlock devtools for master
-    if(typeof unlockDevTools==='function') unlockDevTools(CFG.MASTER_PASS);
+    if(typeof unlockDevTools==='function') unlockDevTools();
   }else{
     showErr('editor-gate-err','Incorrect master password.'); $('editor-gate-pass').value='';
   }
@@ -3078,20 +3082,22 @@ function buildEditorUI(){ buildQBEditor(); renderDivEditor(); renderCredPanel();
 
 /* Credential panel — show current values to Master */
 function renderCredPanel(){
-  if($('cred-hr-cur')) $('cred-hr-cur').textContent=CFG.HR_PASS;
-  if($('cred-admin-cur')) $('cred-admin-cur').textContent=CFG.ADMIN_PASS;
-  if($('cred-master-cur')) $('cred-master-cur').textContent=CFG.MASTER_PASS;
-
+  // Current passwords live only in Apps Script's Script Properties now —
+  // the browser is never given them, so there is nothing to display here.
+  ['cred-hr-cur','cred-admin-cur','cred-master-cur'].forEach(id=>{ if($(id)) $(id).textContent='(hidden — stored on Apps Script)'; });
   updateEpDisplay();
 }
-function saveCredentials(){
+async function saveCredentials(){
   const np=$('new-hr-pass').value.trim(), ap=$('new-admin-pass').value.trim(), mp=$('new-master-pass').value.trim();
-  if(np)CFG.HR_PASS=np;
-  if(ap)CFG.ADMIN_PASS=ap;
-  if(mp)CFG.MASTER_PASS=mp;
+  const jobs=[]; if(np)jobs.push(['hr',np]); if(ap)jobs.push(['admin',ap]); if(mp)jobs.push(['master',mp]);
+  if(!jobs.length){ showToast('Enter at least one new password first.','warn'); return; }
+  for(const [role,newValue] of jobs){
+    const resp=await gsPost({action:'set_pass',role,newValue,currentMaster:_masterPassCache});
+    if(!resp?.ok){ showToast('Failed to update '+role+' password: '+(resp?.error||'unknown error'),'err'); return; }
+    if(role==='master') _masterPassCache=newValue; // stay logged in with the new value
+  }
   $('new-hr-pass').value=''; $('new-admin-pass').value=''; $('new-master-pass').value='';
-  renderCredPanel();
-  showToast('Credentials updated (session only).','ok');
+  showToast('Password(s) updated — takes effect everywhere immediately.','ok');
 }
 
 /* Style panel */
@@ -3915,9 +3921,9 @@ function deleteBulkRevoked(){
 /* ═══════════════════════════════════════════════════════
    TIER 2 — OPERATOR
 ═══════════════════════════════════════════════════════ */
-function checkOperatorGate(){
+async function checkOperatorGate(){
   const v=$('operator-gate-pass').value;
-  if(v===CFG.HR_PASS){
+  if(await verifyPassRemote('hr',v)){
     hideErr('operator-gate-err');$('operator-gate-pass').value='';
     refreshDashboard();goto('s-operator');
   }else{showErr('operator-gate-err','Incorrect HR password.');$('operator-gate-pass').value='';}
@@ -4056,7 +4062,7 @@ function completeToken(id){
 let _reportReturnScreen = 's-role';
 
 // ── View a specific token's report card ─────────────────────────────────
-function viewTokenReport(tokenId, returnScreen){
+async function viewTokenReport(tokenId, returnScreen){
   _reportReturnScreen = returnScreen || 's-role';
   const store = getTokStore();
   const tok   = store[tokenId];
@@ -4065,7 +4071,7 @@ function viewTokenReport(tokenId, returnScreen){
 
   const passkey = window.prompt('Enter Admin passkey to view Report Card:');
   if(passkey === null) return;                          // cancelled
-  if((passkey||'').trim() !== CFG.ADMIN_PASS){
+  if(!(await verifyPassRemote('admin',(passkey||'').trim()))){
     showToast('Incorrect passkey.','err'); return;
   }
 
@@ -4217,9 +4223,9 @@ function renderTokLog(toks){
     </tr>`;
   }).join('');
 }
-function opUnlockReport(){
+async function opUnlockReport(){
   const v=$('op-admin-pass').value;
-  if(v===CFG.ADMIN_PASS){hideErr('op-admin-err');buildReport();goto('s-report');}
+  if(await verifyPassRemote('admin',v)){hideErr('op-admin-err');buildReport();goto('s-report');}
   else showErr('op-admin-err','Incorrect passkey.');
 }
 
@@ -4239,9 +4245,9 @@ const S={
   submissionTs:'',  // shared across all three upload payloads
 };
 
-function checkTakerGate(){
+async function checkTakerGate(){
   const v=$('taker-gate-pass').value;
-  if(v===CFG.HR_PASS){hideErr('taker-gate-err');$('taker-gate-pass').value='';goto('s-setup');}
+  if(await verifyPassRemote('hr',v)){hideErr('taker-gate-err');$('taker-gate-pass').value='';goto('s-setup');}
   else{showErr('taker-gate-err','Incorrect HR password.');$('taker-gate-pass').value='';}
 }
 
@@ -4555,6 +4561,31 @@ async function gsPost(payload){
   }
 }
 
+/* ── SERVER-SIDE PASSWORD CHECK ────────────────────────────────────
+   Passwords are verified by Apps Script (Script Properties), never
+   compared client-side, so nothing readable lives in this page's
+   source. _masterPassCache holds the password the Master just typed
+   in, for this tab only, so Credentials → Save Password doesn't need
+   to ask again — it is never written to storage or logged anywhere.
+─────────────────────────────────────────────────────────────────── */
+let _masterPassCache='';
+async function verifyPassRemote(role,pass){
+  if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR')){
+    showToast('Cannot verify — Apps Script not connected. Contact Master.','err');
+    return false;
+  }
+  try{
+    const resp=await fetch(CFG.GS_ENDPOINT+'?action=verify_pass&role='+encodeURIComponent(role)+'&pass='+encodeURIComponent(pass),
+      {method:'GET',redirect:'follow'});
+    const text=await resp.text();
+    const data=JSON.parse(text);
+    return !!data?.ok;
+  }catch(e){
+    showToast('Cannot verify password — network error. Try again.','err');
+    return false;
+  }
+}
+
 /* ── URL MANAGEMENT & CONNECTION TEST ───────────────────────────── */
 function forceSyncQB(){
   goLive().then(()=>{}).catch(e=>showToast('Sync error: '+e.message,'err'));
@@ -4690,9 +4721,9 @@ async function generateAndUploadPdf(){
 }
 
 /* Admin unlock */
-function unlockReport(){
+async function unlockReport(){
   const v=($('admin-pass')?.value||'').trim();
-  if(v===CFG.ADMIN_PASS){
+  if(await verifyPassRemote('admin',v)){
     hideErr('admin-err');
     try{ buildReport(); }
     catch(e){ showErr('admin-err','Report build error: '+e.message); return; }
