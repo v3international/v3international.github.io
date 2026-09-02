@@ -1542,9 +1542,9 @@ body.light .modal{background:#fff}
         <div class="meta-cell"><div class="meta-k">Discipline</div><div class="meta-v" id="m-disc"></div></div>
         <div class="meta-cell"><div class="meta-k">Division</div><div class="meta-v" id="m-div"></div></div>
         <div class="meta-cell"><div class="meta-k">Level</div><div class="meta-v" id="m-level"></div></div>
-        <div class="meta-cell"><div class="meta-k">Questions</div><div class="meta-v">20 MCQ</div></div>
+        <div class="meta-cell"><div class="meta-k">Questions</div><div class="meta-v" id="m-qcount">20 MCQ</div></div>
         <div class="meta-cell"><div class="meta-k">Time Allowed</div><div class="meta-v">30 Minutes</div></div>
-        <div class="meta-cell"><div class="meta-k">Pass Mark</div><div class="meta-v">70% (14/20)</div></div>
+        <div class="meta-cell"><div class="meta-k">Pass Mark</div><div class="meta-v" id="m-passmark">70% (14/20)</div></div>
         <div class="meta-cell"><div class="meta-k">Position</div><div class="meta-v" id="m-pos"></div></div>
         <div class="meta-cell"><div class="meta-k">Session Mode</div><div class="meta-v">Proctored · Recorded</div></div>
       </div>
@@ -1815,11 +1815,19 @@ const QUESTION_BANK = {};
 /* ═══ UTILS ═════════════════════════════════════════════ */
 const $ = id => document.getElementById(id);
 const fmtTime = s => String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
-const grade = pct =>
-  pct>=90?{g:'A+',label:'Exceptional Pass',rec:'Strongly Recommended'}
-  :pct>=80?{g:'A',label:'Pass with Distinction',rec:'Recommended'}
-  :pct>=70?{g:'B',label:'Minimum Pass',rec:'Recommended'}
-  :{g:'F',label:'FAIL',rec:'Not Recommended'};
+// The B/F boundary always tracks CFG.PASS_PCT (the real configured pass
+// mark, synced from the server) rather than a hardcoded 70 — otherwise
+// this could disagree with the actual PASS/FAIL verdict computed
+// server-side (grade_exam) if the pass mark is ever changed from its
+// default. The tiers above it scale the same way (pass+10, pass+20), so
+// at the 70% default this produces the exact same 70/80/90 as before.
+const grade = pct => {
+  const p=CFG.PASS_PCT||70;
+  return pct>=p+20?{g:'A+',label:'Exceptional Pass',rec:'Strongly Recommended'}
+    :pct>=p+10?{g:'A',label:'Pass with Distinction',rec:'Recommended'}
+    :pct>=p?{g:'B',label:'Minimum Pass',rec:'Recommended'}
+    :{g:'F',label:'FAIL',rec:'Not Recommended'};
+};
 function goto(id){
   document.querySelectorAll('.scr').forEach(el=>el.classList.remove('on'));
   $(id)?.classList.add('on');
@@ -3258,6 +3266,12 @@ function populateIntro(){
   if($('m-level'))$('m-level').textContent=S.seniority==='entry'?'Entry (0–5 yrs)':'Senior (5+ yrs)';
   if($('m-pos'))$('m-pos').textContent=S.position;
   if($('intro-tag'))$('intro-tag').textContent=S.discipline+' · '+(S.seniority.charAt(0).toUpperCase()+S.seniority.slice(1));
+  // These used to be hardcoded as "20 MCQ" / "70% (14/20)" regardless of
+  // the actual configured exam length/pass mark — misleading if either
+  // is ever changed from its default.
+  const examQ=CFG.EXAM_Q||20, passPct=CFG.PASS_PCT||70;
+  if($('m-qcount'))$('m-qcount').textContent=examQ+' MCQ';
+  if($('m-passmark'))$('m-passmark').textContent=passPct+'% ('+Math.round(examQ*passPct/100)+'/'+examQ+')';
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -3868,7 +3882,7 @@ function buildReport(){
         <div class="ic"><div class="ck">Grade</div><div class="cv">${g.g} — ${g.label}</div></div>
         <div class="ic"><div class="ck">Recommendation</div><div class="cv" style="color:${S.passed?'var(--ok)':'var(--fail)'}">${g.rec}</div></div>
         <div class="ic"><div class="ck">Time Taken</div><div class="cv">${timeTaken}</div></div>
-        <div class="ic"><div class="ck">Pass Mark</div><div class="cv">70% (14 / 20)</div></div>
+        <div class="ic"><div class="ck">Pass Mark</div><div class="cv">${CFG.PASS_PCT||70}% (${Math.round(totalQs*(CFG.PASS_PCT||70)/100)} / ${totalQs})</div></div>
         
         
       </div>
