@@ -2107,10 +2107,12 @@ async function loadDiscMap(){
   }
   if(!use) return;
 
-  if(use.gsEndpoint && use.gsEndpoint.startsWith('https://script.google.com/')){
-    CFG.GS_ENDPOINT = use.gsEndpoint;
-    localStorage.setItem('v3_gs_endpoint', use.gsEndpoint);
-  }
+  // Deliberately never let a stored/synced payload override CFG.GS_ENDPOINT —
+  // a bad value saved here once (e.g. a domain-restricted Apps Script URL)
+  // would otherwise silently re-poison every future page load on every
+  // device, permanently locking staff out with no way to self-recover.
+  // The Apps Script endpoint is only ever the value baked into this file,
+  // or one explicitly entered via the Master "Google Apps Script URL" field.
   if(use.discMap){
     Object.keys(DISC_MAP).forEach(k=>delete DISC_MAP[k]);
     Object.assign(DISC_MAP, use.discMap);
@@ -4005,10 +4007,18 @@ function clearState(){try{localStorage.removeItem('v3_exam');}catch(e){}}
 
 /* ═══ INIT ═══════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', async ()=>{
-  // Restore saved GS URL from localStorage
+  // Restore a Master-entered GS URL from localStorage, but only if it's a
+  // normal public deployment (https://script.google.com/macros/s/...). A
+  // domain-restricted deployment URL (.../a/<domain>/macros/s/...) can
+  // never be reached from this public page via fetch() — CORS always
+  // blocks it — so treat one found here as stale and drop it, letting
+  // this device self-heal back to the correct built-in endpoint instead
+  // of staying silently locked out.
   const savedUrl = localStorage.getItem('v3_gs_endpoint');
-  if(savedUrl && savedUrl.startsWith('https://script.google.com/')){
+  if(savedUrl && savedUrl.startsWith('https://script.google.com/macros/s/')){
     CFG.GS_ENDPOINT = savedUrl;
+  }else if(savedUrl){
+    localStorage.removeItem('v3_gs_endpoint');
   }
   // Load division/discipline labels only — never the answer-bearing
   // question content, which is fetched separately and only for Master.
