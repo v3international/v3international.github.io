@@ -549,12 +549,11 @@ body.light .modal{background:#fff}
 .sv-bar-row{display:flex;align-items:center;gap:10px}
 .sv-bar-lbl{font-family:var(--mono);font-size:.62rem;color:var(--muted);width:100px;flex-shrink:0;text-align:right;font-weight:700}
 .sv-bar-track{flex:1;height:17px;background:#F0EBE1;border-radius:8px;overflow:hidden}
-.sv-bar-fill{height:100%;border-radius:8px;display:flex;align-items:center;padding-left:7px}
+.sv-bar-fill{height:100%;border-radius:8px}
 .sv-bar-fill.correct{background:linear-gradient(90deg,#1a6b3c,#2d9c5a)}
 .sv-bar-fill.wrong{background:linear-gradient(90deg,#8B2020,#c43838)}
 .sv-bar-fill.skip{background:linear-gradient(90deg,#b05000,#e07a35)}
-.sv-bar-val{font-family:var(--mono);font-size:.6rem;font-weight:700;color:#fff;white-space:nowrap}
-.sv-bar-pct{font-family:var(--mono);font-size:.6rem;color:var(--muted);width:32px;flex-shrink:0;text-align:right;font-weight:700}
+.sv-bar-pct{font-family:var(--mono);font-size:.6rem;color:var(--muted);width:66px;flex-shrink:0;text-align:right;font-weight:700;white-space:nowrap}
 
 
 
@@ -3354,7 +3353,13 @@ function startVideoRecording(){
     const vid=$('pip-video');
     const drawInt=setInterval(()=>{if(vid?.videoWidth)ctx.drawImage(vid,0,0,320,240);},100);
     const stream=canvas.captureStream(10);
-    const opts={mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:100000};
+    // 100kbps × a full 30-minute exam = ~22.5MB raw, ~30MB once base64-
+    // encoded for the upload_video POST — too close to Apps Script's
+    // practical request-size ceiling (~50MB) to be reliable, especially
+    // on a candidate's home connection. 56kbps keeps a 30-minute
+    // recording to ~12.6MB raw / ~17MB base64, comfortable margin, still
+    // watchable at this resolution/frame rate for verification purposes.
+    const opts={mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:56000};
     if(!MediaRecorder.isTypeSupported(opts.mimeType)){delete opts.mimeType;}
     _mr=new MediaRecorder(stream,opts);
     _mr.ondataavailable=e=>{if(e.data?.size>0)_vidChunks.push(e.data);};
@@ -3668,10 +3673,41 @@ async function generateAndUploadPdf(){
     }
 
     // Self-contained CSS — matches Admin Panel styling exactly
-    const REPORT_CSS = "/* V3 ME Report Card — Print-ready standalone CSS\n   Matches Admin Panel preview exactly.\n   @page: A4 portrait, 0.4in margins */\n@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;700;800&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');\n\n/* Force background colors to print */\n*{\n  -webkit-print-color-adjust:exact!important;\n  print-color-adjust:exact!important;\n  color-adjust:exact!important;\n  box-sizing:border-box;\n  margin:0;padding:0;\n}\n\n@page{size:A4 portrait;margin:10mm}\n@media print{\n  body{margin:0}\n  .rpt-pg{width:100%;max-width:100%;box-sizing:border-box;padding:0 15px;page-break-after:always!important;break-after:page!important;overflow:hidden}\n  .rpt-pg:last-child{page-break-after:avoid!important;break-after:avoid!important;overflow:hidden}\n}\n\n/* CSS vars used by buildReport inline styles */\n:root{\n  --ok:#1a6b3c;--fail:#8B2020;--warn:#b05000;\n  --gold:#C9A84C;--gold-d:#a8893a;\n  --muted:#888888;\n  --navy:#0A1628;\n  --serif:'EB Garamond',Georgia,serif;\n  --mono:'DM Mono','Courier New',monospace;\n}\n\nhtml,body{background:#ffffff;font-family:'Outfit',Arial,sans-serif;color:#1a1a1a;font-size:14px}\n\n/* ── PAGE ── */\n.rpt-pg{background:#ffffff;width:100%;position:relative;margin-bottom:0;overflow:visible}\n\n/* ── HEADER ── */\n.pg-hdr{background:#0A1628!important;border-radius:0;margin-bottom:16px}\n.pg-hdr-top{\n  padding:14px 20px 10px;\n  display:flex;align-items:center;justify-content:space-between;\n}\nimg.pg-hdr-logo{\n  height:36px!important;width:auto!important;display:block;flex-shrink:0;\n}\n.pg-hdr-title h1{\n  font-family:'Outfit',sans-serif;font-size:12px;color:#E8E2D6!important;\n  font-weight:700;text-align:right;line-height:1.4;\n}\n.pg-hdr-title p{\n  font-size:8.5px;color:rgba(201,168,76,.7)!important;text-align:right;margin-top:2px;\n  letter-spacing:.06em;text-transform:uppercase;\n}\n.pg-hdr-stripe{height:4px;background:linear-gradient(90deg,#C9A84C,#e8d08a,#C9A84C)!important}\n.pg-hdr-band{\n  background:rgba(201,168,76,.08)!important;\n  padding:5px 20px;display:flex;justify-content:space-between;align-items:center;\n}\n.pg-hdr-band-tag{\n  font-size:7px;color:rgba(201,168,76,.85)!important;\n  text-transform:uppercase;letter-spacing:.18em;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n.pg-hdr-band-ref{font-size:7px;color:rgba(255,255,255,.45)!important;letter-spacing:.06em}\n\n/* ── FOOTER ── */\n.pg-ftr{\n  background:#0A1628!important;\n  padding:6px 20px;display:flex;justify-content:space-between;align-items:center;\n  margin-top:24px;\n}\n.pg-ftr span{font-size:7px;color:rgba(255,255,255,.4)!important;font-family:'DM Mono',monospace}\n.pg-ftr .pgn{color:rgba(255,255,255,.7)!important;font-weight:700;font-size:7px}\n.gd{font-style:italic;color:rgba(201,168,76,.7)!important}\n\n/* ── PAGE 1 HERO ── */\n.p1-hero{\n  padding:16px 20px 10px;\n  display:grid;grid-template-columns:1fr auto;gap:14px;align-items:start;\n}\n.p1-eyebrow{\n  font-size:8px;color:#C9A84C!important;font-weight:700;\n  text-transform:uppercase;letter-spacing:.16em;margin-bottom:6px;\n  font-family:'DM Mono',monospace;\n}\n.p1-title h2{\n  font-family:'EB Garamond',Georgia,serif;\n  font-size:28px;color:#0A1628!important;font-weight:800;margin-bottom:4px;line-height:1.1;\n}\n.p1-subtitle{font-size:9px;color:#555!important;margin-top:4px;letter-spacing:.04em}\n\n/* ── VERDICT BADGE ── */\n.verdict-badge{\n  display:flex;flex-direction:column;align-items:center;\n  justify-content:center;width:82px;height:82px;border-radius:50%;\n  font-weight:800;flex-shrink:0;\n}\n.verdict-badge.pass{background:linear-gradient(135deg,#0d4a28,#1a6b3c)!important}\n.verdict-badge.fail{background:linear-gradient(135deg,#5a0d0d,#8B2020)!important}\n.vb-pct{font-size:21px;color:#ffffff!important;line-height:1;font-weight:800}\n.vb-lbl{font-size:6.5px;color:rgba(255,255,255,.65)!important;text-transform:uppercase;margin-top:2px;letter-spacing:.06em}\n.vb-verdict{font-size:6.5px;color:rgba(255,255,255,.9)!important;font-weight:800;text-transform:uppercase;margin-top:2px}\n\n/* ── DIVIDERS & SECTIONS ── */\n.r-divider{height:1px;background:#e0d8c8!important;margin:0 0 0 0}\n.r-sec{padding:10px 0}\n.r-sec-lbl{\n  font-size:7.5px;letter-spacing:.2em;text-transform:uppercase;\n  color:#C9A84C!important;margin-bottom:8px;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n\n/* ── INFO CARD GRID ── */\n.ig4{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}\n.ig2{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}\n.ic{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:8px 10px;\n}\n.ic.acc{background:#0A1628!important}\n.ic.acc .ck{color:rgba(201,168,76,.65)!important}\n.ic.acc .cv{color:#E8E2D6!important}\n.ic.pass-c{background:#eaf5ef!important}\n.ic.pass-c .cv{color:#1a6b3c!important}\n.ic.fail-c{background:#fdeaea!important}\n.ic.fail-c .cv{color:#8B2020!important}\n.ck{\n  font-size:6.5px;letter-spacing:.1em;text-transform:uppercase;\n  color:#888!important;margin-bottom:3px;font-weight:600;\n  font-family:'DM Mono',monospace;\n}\n.cv{font-weight:700;font-size:10px;color:#0A1628!important;line-height:1.3}\n\n/* ── SCORE BARS ── */\n.sv-bars{display:flex;flex-direction:column;gap:5px;padding:8px 0}\n.sv-bar-row{display:flex;align-items:center;gap:8px}\n.sv-bar-lbl{\n  font-size:7px;color:#555!important;width:70px;text-align:right;\n  font-weight:700;font-family:'DM Mono',monospace;\n}\n.sv-bar-track{flex:1;height:12px;background:#f0ebe1!important;border-radius:6px;overflow:hidden}\n.sv-bar-fill{height:100%;border-radius:6px;display:flex;align-items:center;padding-left:6px}\n.sv-bar-fill.correct{background:linear-gradient(90deg,#1a6b3c,#2d9c5a)!important}\n.sv-bar-fill.wrong{background:linear-gradient(90deg,#8B2020,#c43838)!important}\n.sv-bar-fill.skip{background:linear-gradient(90deg,#b05000,#d4722a)!important}\n.sv-bar-val{font-size:7px;font-weight:700;color:#ffffff!important}\n.sv-bar-pct{font-size:7px;color:#777!important;width:28px;text-align:right;font-family:'DM Mono',monospace}\n\n/* ── PROCTOR BANNER ── */\n.proctor-banner{\n  border-radius:6px;padding:10px 14px;\n  display:flex;align-items:center;gap:10px;border:1px solid;\n  margin:8px 0;\n}\n.proctor-banner.clean{background:#eaf5ef!important;border-color:rgba(26,107,60,.25)!important}\n.proctor-banner.warn{background:#fff3e0!important;border-color:rgba(176,80,0,.25)!important}\n.proctor-banner.flagged{background:#fdeaea!important;border-color:rgba(139,32,32,.25)!important}\n.pb-icon{font-size:18px;flex-shrink:0}\n.pb-body{flex:1}\n.pb-count{font-size:22px;font-weight:800;color:#0A1628!important}\n.pb-title{font-size:9px;font-weight:800;margin-bottom:2px}\n.proctor-banner.clean .pb-title{color:#1a6b3c!important}\n.proctor-banner.warn .pb-title{color:#b05000!important}\n.proctor-banner.flagged .pb-title{color:#8B2020!important}\n.pb-desc{font-size:8px;color:#444!important;line-height:1.5}\n.vid-link{color:#1155CC!important;font-size:8px;font-weight:700;cursor:pointer;text-decoration:none}\n\n/* ── SIGNATURE ── */\n.sig-block{padding:12px 0 8px}\n.sig-row{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:8px}\n.sig-item{padding-top:30px;border-top:1px solid #ccc!important}\n.sig-item .sl{\n  font-size:7px;text-transform:uppercase;color:#aaa!important;\n  font-family:'DM Mono',monospace;letter-spacing:.1em;\n}\n.sd{font-size:8px;color:#444!important;margin-top:2px}\n\n/* ── Q&A PAGES ── */\n/* Remove the extra watermark icon on pages 2&3 */\n.qa-pg-hdr{\n  display:flex;align-items:flex-start;gap:10px;\n  padding:4px 0 14px 0;\n  border-bottom:2px solid #e0d8c8;\n  margin-bottom:12px;\n}\n/* Hide the floating icon that was causing the watermark — keep the text */\n.qa-pg-icon{display:none!important}\n\n.qa-pg-title{\n  font-family:'EB Garamond',serif;font-size:15px;font-weight:700;\n  color:#0A1628!important;line-height:1.2;\n}\n.qa-pg-sub{font-size:8px;color:#777!important;margin-top:3px}\n\n/* ── Q&A TABLE — fixed column widths per mandate ── */\n.qa-tbl{width:100%;border-collapse:collapse;table-layout:fixed;word-wrap:break-word}\n.qa-tbl thead tr{background:#0A1628!important}\n.qa-tbl th{\n  padding:6px 8px;text-align:left;\n  color:#E8E2D6!important;font-size:7.5px;\n  text-transform:uppercase;letter-spacing:.08em;font-weight:600;\n  overflow:hidden;\n}\n/* Mandate column widths: # 5% | SEC 5% | Q 40% | CA 20% | Correct 20% | Result 10% */\n.qa-tbl th:nth-child(1),.qa-tbl td:nth-child(1){width:5%}\n.qa-tbl th:nth-child(2),.qa-tbl td:nth-child(2){width:5%}\n.qa-tbl th:nth-child(3),.qa-tbl td:nth-child(3){width:40%}\n.qa-tbl th:nth-child(4),.qa-tbl td:nth-child(4){width:20%}\n.qa-tbl th:nth-child(5),.qa-tbl td:nth-child(5){width:20%}\n.qa-tbl th:nth-child(6),.qa-tbl td:nth-child(6){width:10%}\n\n.qa-tbl td{\n  padding:7px 8px;border-bottom:1px solid #ece7dc!important;\n  font-size:8px;color:#111!important;vertical-align:top;\n  word-wrap:break-word;overflow-wrap:break-word;\n}\n.qa-tbl tr:nth-child(even) td{background:#faf7f0!important}\n.q-n{font-weight:800;font-size:8px;color:#0A1628!important;font-family:'DM Mono',monospace}\n\n/* SEC pill */\n.q-sec-pill{\n  display:inline-flex;align-items:center;justify-content:center;\n  width:22px;height:22px;border-radius:50%;\n  background:#0A1628!important;color:#E8E2D6!important;\n  font-size:7px;font-weight:700;font-family:'DM Mono',monospace;\n}\n\n.q-given-ok{color:#1a6b3c!important;font-weight:700;font-size:8px}\n.q-given-fail{color:#8B2020!important;font-weight:700;font-size:8px}\n.q-given-na{color:#aaa!important;font-style:italic;font-size:8px}\n\n.r-ok{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#eaf5ef!important;color:#1a6b3c!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(26,107,60,.2)!important;\n}\n.r-fail{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#fdeaea!important;color:#8B2020!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(139,32,32,.2)!important;\n}\n.skip{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:rgba(176,80,0,.08)!important;color:#b05000!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;\n}\n\n/* ── FORENSIC LOG ── */\n.flog-sec{padding:12px 0 0 0}\n.flog2{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:10px;font-size:8px;\n  font-family:'DM Mono','Courier New',monospace;\n  line-height:1.6;\n}\n.flog2-row{display:flex;gap:10px;padding:2px 0}\n.flog2-ts{color:#a8893a!important;font-weight:700;flex-shrink:0;min-width:56px}\n.flog2-ev{color:#333!important}\n.flog2-ev.ai-w{color:#b05000!important}\n.flog2-ev.ai-c{color:#8B2020!important}";
+    const REPORT_CSS = "/* V3 ME Report Card — Print-ready standalone CSS\n   Matches Admin Panel preview exactly.\n   @page: A4 portrait, 0.4in margins */\n@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;700;800&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');\n\n/* Force background colors to print */\n*{\n  -webkit-print-color-adjust:exact!important;\n  print-color-adjust:exact!important;\n  color-adjust:exact!important;\n  box-sizing:border-box;\n  margin:0;padding:0;\n}\n\n@page{size:A4 portrait;margin:10mm}\n@media print{\n  body{margin:0}\n  .rpt-pg{width:100%;max-width:100%;box-sizing:border-box;padding:0 15px;page-break-after:always!important;break-after:page!important;overflow:hidden}\n  .rpt-pg:last-child{page-break-after:avoid!important;break-after:avoid!important;overflow:hidden}\n}\n\n/* CSS vars used by buildReport inline styles */\n:root{\n  --ok:#1a6b3c;--fail:#8B2020;--warn:#b05000;\n  --gold:#C9A84C;--gold-d:#a8893a;\n  --muted:#888888;\n  --navy:#0A1628;\n  --serif:'EB Garamond',Georgia,serif;\n  --mono:'DM Mono','Courier New',monospace;\n}\n\nhtml,body{background:#ffffff;font-family:'Outfit',Arial,sans-serif;color:#1a1a1a;font-size:14px}\n\n/* ── PAGE ── */\n.rpt-pg{background:#ffffff;width:100%;position:relative;margin-bottom:0;overflow:visible}\n\n/* ── HEADER ── */\n.pg-hdr{background:#0A1628!important;border-radius:0;margin-bottom:16px}\n.pg-hdr-top{\n  padding:14px 20px 10px;\n  display:flex;align-items:center;justify-content:space-between;\n}\nimg.pg-hdr-logo{\n  height:36px!important;width:auto!important;display:block;flex-shrink:0;\n}\n.pg-hdr-title h1{\n  font-family:'Outfit',sans-serif;font-size:12px;color:#E8E2D6!important;\n  font-weight:700;text-align:right;line-height:1.4;\n}\n.pg-hdr-title p{\n  font-size:8.5px;color:rgba(201,168,76,.7)!important;text-align:right;margin-top:2px;\n  letter-spacing:.06em;text-transform:uppercase;\n}\n.pg-hdr-stripe{height:4px;background:linear-gradient(90deg,#C9A84C,#e8d08a,#C9A84C)!important}\n.pg-hdr-band{\n  background:rgba(201,168,76,.08)!important;\n  padding:5px 20px;display:flex;justify-content:space-between;align-items:center;\n}\n.pg-hdr-band-tag{\n  font-size:7px;color:rgba(201,168,76,.85)!important;\n  text-transform:uppercase;letter-spacing:.18em;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n.pg-hdr-band-ref{font-size:7px;color:rgba(255,255,255,.45)!important;letter-spacing:.06em}\n\n/* ── FOOTER ── */\n.pg-ftr{\n  background:#0A1628!important;\n  padding:6px 20px;display:flex;justify-content:space-between;align-items:center;\n  margin-top:24px;\n}\n.pg-ftr span{font-size:7px;color:rgba(255,255,255,.4)!important;font-family:'DM Mono',monospace}\n.pg-ftr .pgn{color:rgba(255,255,255,.7)!important;font-weight:700;font-size:7px}\n.gd{font-style:italic;color:rgba(201,168,76,.7)!important}\n\n/* ── PAGE 1 HERO ── */\n.p1-hero{\n  padding:16px 20px 10px;\n  display:grid;grid-template-columns:1fr auto;gap:14px;align-items:start;\n}\n.p1-eyebrow{\n  font-size:8px;color:#C9A84C!important;font-weight:700;\n  text-transform:uppercase;letter-spacing:.16em;margin-bottom:6px;\n  font-family:'DM Mono',monospace;\n}\n.p1-title h2{\n  font-family:'EB Garamond',Georgia,serif;\n  font-size:28px;color:#0A1628!important;font-weight:800;margin-bottom:4px;line-height:1.1;\n}\n.p1-subtitle{font-size:9px;color:#555!important;margin-top:4px;letter-spacing:.04em}\n\n/* ── VERDICT BADGE ── */\n.verdict-badge{\n  display:flex;flex-direction:column;align-items:center;\n  justify-content:center;width:82px;height:82px;border-radius:50%;\n  font-weight:800;flex-shrink:0;\n}\n.verdict-badge.pass{background:linear-gradient(135deg,#0d4a28,#1a6b3c)!important}\n.verdict-badge.fail{background:linear-gradient(135deg,#5a0d0d,#8B2020)!important}\n.vb-pct{font-size:21px;color:#ffffff!important;line-height:1;font-weight:800}\n.vb-lbl{font-size:6.5px;color:rgba(255,255,255,.65)!important;text-transform:uppercase;margin-top:2px;letter-spacing:.06em}\n.vb-verdict{font-size:6.5px;color:rgba(255,255,255,.9)!important;font-weight:800;text-transform:uppercase;margin-top:2px}\n\n/* ── DIVIDERS & SECTIONS ── */\n.r-divider{height:1px;background:#e0d8c8!important;margin:0 0 0 0}\n.r-sec{padding:16px 0}\n.r-sec-lbl{\n  font-size:7.5px;letter-spacing:.2em;text-transform:uppercase;\n  color:#C9A84C!important;margin-bottom:8px;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n\n/* ── INFO CARD GRID ── */\n.ig4{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}\n.ig2{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}\n.ic{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:8px 10px;\n}\n.ic.acc{background:#0A1628!important}\n.ic.acc .ck{color:rgba(201,168,76,.65)!important}\n.ic.acc .cv{color:#E8E2D6!important}\n.ic.pass-c{background:#eaf5ef!important}\n.ic.pass-c .cv{color:#1a6b3c!important}\n.ic.fail-c{background:#fdeaea!important}\n.ic.fail-c .cv{color:#8B2020!important}\n.ck{\n  font-size:6.5px;letter-spacing:.1em;text-transform:uppercase;\n  color:#888!important;margin-bottom:3px;font-weight:600;\n  font-family:'DM Mono',monospace;\n}\n.cv{font-weight:700;font-size:10px;color:#0A1628!important;line-height:1.3}\n\n/* ── SCORE BARS ── */\n.sv-bars{display:flex;flex-direction:column;gap:9px;padding:16px 0}\n.sv-bar-row{display:flex;align-items:center;gap:8px}\n.sv-bar-lbl{\n  font-size:7px;color:#555!important;width:70px;text-align:right;\n  font-weight:700;font-family:'DM Mono',monospace;\n}\n.sv-bar-track{flex:1;height:12px;background:#f0ebe1!important;border-radius:6px;overflow:hidden}\n.sv-bar-fill{height:100%;border-radius:6px}\n.sv-bar-fill.correct{background:linear-gradient(90deg,#1a6b3c,#2d9c5a)!important}\n.sv-bar-fill.wrong{background:linear-gradient(90deg,#8B2020,#c43838)!important}\n.sv-bar-fill.skip{background:linear-gradient(90deg,#b05000,#d4722a)!important}\n.sv-bar-pct{font-size:7px;color:#555!important;width:62px;flex-shrink:0;text-align:right;font-family:'DM Mono',monospace;white-space:nowrap;font-weight:700}\n\n/* ── PROCTOR BANNER ── */\n.proctor-banner{\n  border-radius:6px;padding:10px 14px;\n  display:flex;align-items:center;gap:10px;border:1px solid;\n  margin:8px 0;\n}\n.proctor-banner.clean{background:#eaf5ef!important;border-color:rgba(26,107,60,.25)!important}\n.proctor-banner.warn{background:#fff3e0!important;border-color:rgba(176,80,0,.25)!important}\n.proctor-banner.flagged{background:#fdeaea!important;border-color:rgba(139,32,32,.25)!important}\n.pb-icon{font-size:18px;flex-shrink:0}\n.pb-body{flex:1}\n.pb-count{font-size:22px;font-weight:800;color:#0A1628!important}\n.pb-title{font-size:9px;font-weight:800;margin-bottom:2px}\n.proctor-banner.clean .pb-title{color:#1a6b3c!important}\n.proctor-banner.warn .pb-title{color:#b05000!important}\n.proctor-banner.flagged .pb-title{color:#8B2020!important}\n.pb-desc{font-size:8px;color:#444!important;line-height:1.5}\n.vid-link{color:#1155CC!important;font-size:8px;font-weight:700;cursor:pointer;text-decoration:none}\n\n/* ── SIGNATURE ── */\n.sig-block{padding:26px 0 8px}\n.sig-row{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:8px}\n.sig-item{padding-top:30px;border-top:1px solid #ccc!important}\n.sig-item .sl{\n  font-size:7px;text-transform:uppercase;color:#aaa!important;\n  font-family:'DM Mono',monospace;letter-spacing:.1em;\n}\n.sd{font-size:8px;color:#444!important;margin-top:2px}\n\n/* ── Q&A PAGES ── */\n/* Remove the extra watermark icon on pages 2&3 */\n.qa-pg-hdr{\n  display:flex;align-items:flex-start;gap:10px;\n  padding:4px 0 14px 0;\n  border-bottom:2px solid #e0d8c8;\n  margin-bottom:12px;\n}\n/* Hide the floating icon that was causing the watermark — keep the text */\n.qa-pg-icon{display:none!important}\n\n.qa-pg-title{\n  font-family:'EB Garamond',serif;font-size:15px;font-weight:700;\n  color:#0A1628!important;line-height:1.2;\n}\n.qa-pg-sub{font-size:8px;color:#777!important;margin-top:3px}\n\n/* ── Q&A TABLE — fixed column widths per mandate ── */\n.qa-tbl{width:100%;border-collapse:collapse;table-layout:fixed;word-wrap:break-word}\n.qa-tbl thead tr{background:#0A1628!important}\n.qa-tbl th{\n  padding:6px 8px;text-align:left;\n  color:#E8E2D6!important;font-size:7.5px;\n  text-transform:uppercase;letter-spacing:.08em;font-weight:600;\n  overflow:hidden;\n}\n/* Mandate column widths: # 5% | SEC 5% | Q 40% | CA 20% | Correct 20% | Result 10% */\n.qa-tbl th:nth-child(1),.qa-tbl td:nth-child(1){width:5%}\n.qa-tbl th:nth-child(2),.qa-tbl td:nth-child(2){width:5%}\n.qa-tbl th:nth-child(3),.qa-tbl td:nth-child(3){width:40%}\n.qa-tbl th:nth-child(4),.qa-tbl td:nth-child(4){width:20%}\n.qa-tbl th:nth-child(5),.qa-tbl td:nth-child(5){width:20%}\n.qa-tbl th:nth-child(6),.qa-tbl td:nth-child(6){width:10%}\n\n.qa-tbl td{\n  padding:7px 8px;border-bottom:1px solid #ece7dc!important;\n  font-size:8px;color:#111!important;vertical-align:top;\n  word-wrap:break-word;overflow-wrap:break-word;\n}\n.qa-tbl tr:nth-child(even) td{background:#faf7f0!important}\n.q-n{font-weight:800;font-size:8px;color:#0A1628!important;font-family:'DM Mono',monospace}\n\n/* ── Q&A LOCK GATE ── */\n.qa-locked{border:1.5px dashed #d8cdb0!important;border-radius:8px;padding:22px 20px;text-align:center;background:#faf7f0!important}\n.qa-lock-icon{font-size:22px;margin-bottom:6px}\n.qa-lock-title{font-family:'Outfit',sans-serif;font-weight:800;font-size:11px;color:#0A1628!important;margin-bottom:4px}\n.qa-lock-desc{font-size:8.5px;color:#777!important;margin-bottom:12px;max-width:420px;margin-left:auto;margin-right:auto;line-height:1.5}\n.qa-pass-row{display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap}\n.qa-pass-input{font-family:'DM Mono',monospace;font-size:9px;padding:6px 10px;border:1.5px solid #d8cdb0;border-radius:5px;width:160px}\n.qa-unlock-btn{font-family:'Outfit',sans-serif;font-weight:700;font-size:8.5px;padding:7px 16px;border-radius:5px;border:none;background:#0A1628!important;color:#E8E2D6!important;cursor:pointer}\n.qa-unlock-btn:disabled{opacity:.6;cursor:default}\n.qa-pass-err{display:none;color:#8B2020!important;font-size:8px;margin-top:8px}\n/* Deliberately no @media print override here: printing (Ctrl+P → Save as\n   PDF) is the normal way this report becomes a PDF, so whichever state\n   is on screen at that moment — locked or unlocked — is what must print.\n   Overriding it to always reveal the Q&A on print would let anyone skip\n   the password entirely just by printing without unlocking first. */\n\n/* SEC pill */\n.q-sec-pill{\n  display:inline-flex;align-items:center;justify-content:center;\n  width:22px;height:22px;border-radius:50%;\n  background:#0A1628!important;color:#E8E2D6!important;\n  font-size:7px;font-weight:700;font-family:'DM Mono',monospace;\n}\n\n.q-given-ok{color:#1a6b3c!important;font-weight:700;font-size:8px}\n.q-given-fail{color:#8B2020!important;font-weight:700;font-size:8px}\n.q-given-na{color:#aaa!important;font-style:italic;font-size:8px}\n\n.r-ok{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#eaf5ef!important;color:#1a6b3c!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(26,107,60,.2)!important;\n}\n.r-fail{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#fdeaea!important;color:#8B2020!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(139,32,32,.2)!important;\n}\n.skip{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:rgba(176,80,0,.08)!important;color:#b05000!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;\n}\n\n/* ── FORENSIC LOG ── */\n.flog-sec{padding:12px 0 0 0}\n.flog2{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:10px;font-size:8px;\n  font-family:'DM Mono','Courier New',monospace;\n  line-height:1.6;\n}\n.flog2-row{display:flex;gap:10px;padding:2px 0}\n.flog2-ts{color:#a8893a!important;font-weight:700;flex-shrink:0;min-width:56px}\n.flog2-ev{color:#333!important}\n.flog2-ev.ai-w{color:#b05000!important}\n.flog2-ev.ai-c{color:#8B2020!important}";
 
     // Report body from DOM — logos already have base64 src from injectLogos()
     const bodyHtml = rptEl.innerHTML;
+
+    // Powers unlockQA() (see qaGate() in buildReport()) — the exported
+    // file is otherwise plain static HTML with no script at all, so this
+    // is the only JS shipped with it. The closing script tag below is
+    // built from two concatenated string pieces, not written whole —
+    // HTML's parser ends a script element on that exact character
+    // sequence wherever it appears in the text, comments included, with
+    // no regard for JS syntax, so writing it whole here would truncate
+    // THIS file's own surrounding script element right at this point.
+    const REPORT_JS = '\n<script>\n'
+      + 'function unlockQA(btn){\n'
+      + '  var wrap=btn.closest(".qa-locked");\n'
+      + '  var input=wrap.querySelector(".qa-pass-input");\n'
+      + '  var errEl=wrap.querySelector(".qa-pass-err");\n'
+      + '  var pass=input.value;\n'
+      + '  errEl.style.display="none";\n'
+      + '  btn.disabled=true;btn.textContent="Checking…";\n'
+      + '  fetch(' + JSON.stringify(CFG.GS_ENDPOINT) + '+"?action=verify_pass&role=master&pass="+encodeURIComponent(pass),{method:"GET"})\n'
+      + '    .then(function(r){return r.text();})\n'
+      + '    .then(function(t){\n'
+      + '      var data=JSON.parse(t);\n'
+      + '      if(data&&data.ok){\n'
+      + '        document.querySelectorAll(".qa-locked").forEach(function(el){el.style.display="none";});\n'
+      + '        document.querySelectorAll(".qa-real-content").forEach(function(el){el.style.display="block";});\n'
+      + '      }else{\n'
+      + '        errEl.style.display="block";btn.disabled=false;btn.textContent="Unlock";\n'
+      + '      }\n'
+      + '    })\n'
+      + '    .catch(function(){errEl.style.display="block";btn.disabled=false;btn.textContent="Unlock";});\n'
+      + '}\n'
+      + '<' + '/script>';
 
     const reportHtml = '<!DOCTYPE html>'
       + '<html lang="en"><head><meta charset="UTF-8">'
@@ -3681,6 +3717,7 @@ async function generateAndUploadPdf(){
       + '</head>'
       + '<body>'
       + bodyHtml
+      + REPORT_JS
       + '</body></html>';
 
     console.log('V3: report ~' + Math.round(reportHtml.length/1024) + 'KB');
@@ -3727,8 +3764,13 @@ function buildReport(){
     :'Focus losses, blocked keys, or AI flags detected. See forensic log on Page 3.';
 
   const vidUrl=S.videoUploadUrl||S.videoUrl||'';
+  // A plain link, not onclick="openVideoModal(...)" — this markup is only
+  // ever used to build the exported, standalone report file (#rpt-doc/
+  // #s-report is never shown live in the app — see buildReport()), which
+  // has no <script> defining that function, so the old onclick silently
+  // did nothing every time this was clicked from an opened report.
   const vidLinkHtml=vidUrl
-    ?`<span class="vid-link" onclick="openVideoModal('${vidUrl}')">▶ Review Proctoring Video</span>`
+    ?`<a class="vid-link" href="${vidUrl}" target="_blank" rel="noopener">▶ Review Proctoring Video</a>`
     :'<span style="font-size:.76rem;color:#aaa">Video pending upload…</span>';
 
   function pgHdr(tag){return`<div class="pg-hdr">
@@ -3746,6 +3788,22 @@ function buildReport(){
     <span>V3 Middle East Engineering Consultants Co. &nbsp;|&nbsp; <span class="gd">Visio · Vertere · Virtute</span> &nbsp;|&nbsp; v3international.com &nbsp;|&nbsp; Generated ${dateStr} ${timeStr}</span>
     <span class="pgn">Page ${n} of ${tot}</span>
   </div>`;}
+  // Wraps a Q&A table so it's hidden by default in the exported report —
+  // most people reviewing results only need the summary/score, not the
+  // full answer key. unlockQA() (defined in generateAndUploadPdf(), only
+  // present in the exported standalone file) reveals every gated table
+  // at once, for whoever is authorized to check specific answers.
+  function qaGate(tableHtml){return `<div class="qa-locked">
+      <div class="qa-lock-icon">🔒</div>
+      <div class="qa-lock-title">Detailed Q&amp;A Breakdown — Hidden</div>
+      <div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Master password to review them for this candidate.</div>
+      <div class="qa-pass-row">
+        <input type="password" class="qa-pass-input" placeholder="Master password" onkeydown="if(event.key==='Enter')unlockQA(this.nextElementSibling)">
+        <button class="qa-unlock-btn" onclick="unlockQA(this)">Unlock</button>
+      </div>
+      <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>
+    </div>
+    <div class="qa-real-content" style="display:none">${tableHtml}</div>`;}
 
   /* PAGE 1 */
   const page1=`<div class="rpt-pg">
@@ -3791,9 +3849,9 @@ function buildReport(){
       </div>
     </div>
     <div class="sv-bars">
-      <div class="sv-bar-row"><span class="sv-bar-lbl">Correct</span><div class="sv-bar-track"><div class="sv-bar-fill correct" style="width:${correctPct}%"><span class="sv-bar-val">${S.score} questions</span></div></div><span class="sv-bar-pct">${correctPct}%</span></div>
-      <div class="sv-bar-row"><span class="sv-bar-lbl">Wrong</span><div class="sv-bar-track"><div class="sv-bar-fill wrong" style="width:${wrongPct}%">${wrong>0?`<span class="sv-bar-val">${wrong} questions</span>`:''}</div></div><span class="sv-bar-pct">${wrongPct}%</span></div>
-      ${skipped>0?`<div class="sv-bar-row"><span class="sv-bar-lbl">Unanswered</span><div class="sv-bar-track"><div class="sv-bar-fill skip" style="width:${skipPct}%"><span class="sv-bar-val">${skipped} questions</span></div></div><span class="sv-bar-pct">${skipPct}%</span></div>`:''}
+      <div class="sv-bar-row"><span class="sv-bar-lbl">Correct</span><div class="sv-bar-track"><div class="sv-bar-fill correct" style="width:${correctPct}%"></div></div><span class="sv-bar-pct">${S.score} q &middot; ${correctPct}%</span></div>
+      <div class="sv-bar-row"><span class="sv-bar-lbl">Wrong</span><div class="sv-bar-track"><div class="sv-bar-fill wrong" style="width:${wrongPct}%"></div></div><span class="sv-bar-pct">${wrong} q &middot; ${wrongPct}%</span></div>
+      ${skipped>0?`<div class="sv-bar-row"><span class="sv-bar-lbl">Unanswered</span><div class="sv-bar-track"><div class="sv-bar-fill skip" style="width:${skipPct}%"></div></div><span class="sv-bar-pct">${skipped} q &middot; ${skipPct}%</span></div>`:''}
     </div>
     
     <div class="proctor-banner ${proctorCls}">
@@ -3861,7 +3919,7 @@ function buildReport(){
         <div class="qa-pg-sub">${S.score} correct \xb7 ${wrong} wrong \xb7 ${skipped} unanswered \xb7 ${Math.min(10,totalQs)} shown</div>
       </div>
     </div>
-    ${pg2Table}
+    ${qaGate(pg2Table)}
     ${pgFtr(2,3)}
   </div>`;
 
@@ -3898,7 +3956,7 @@ function buildReport(){
         <div class="qa-pg-sub">${S.score} correct \xb7 ${wrong} wrong \xb7 ${skipped} unanswered \xb7 ${totalQs} total</div>
       </div>
     </div>
-    ${pg3Table}
+    ${qaGate(pg3Table)}
     <div class="flog-sec">
       <div class="r-sec-lbl">\u{1F50D} Proctoring &amp; Forensic Log</div>
       <div style="font-size:.78rem;color:#555;margin-bottom:7px">Focus violations: ${S.blurCount} &nbsp;|&nbsp; ${vidLinkHtml}</div>
@@ -3948,12 +4006,12 @@ async function initAIProctoring(){
     // Same 15s settle-in grace period as the face check below — a mic
     // pop/click or ambient noise right as the camera activates otherwise
     // flagged instantly, before the candidate had even started.
-    setTimeout(()=>{AIP.audioInterval=setInterval(runAudioCheck,3000);},15000);
+    setTimeout(()=>{AIP.audioInterval=setInterval(runAudioCheck,3000);},5000);
   }catch(e){}
-  // 15s (was 8s) grace period before checks start — time to sit down,
-  // adjust the camera, and let auto-exposure/white-balance settle instead
-  // of reading normal first-moment motion as a violation.
-  setTimeout(()=>{AIP.faceInterval=setInterval(runFaceCheck,3500);},15000);
+  // Short grace period before checks start — long enough to clear the
+  // initial camera-focus/mic-pop moment, short enough that it doesn't eat
+  // into a short exam's proctoring coverage.
+  setTimeout(()=>{AIP.faceInterval=setInterval(runFaceCheck,3500);},5000);
 }
 function stopAIProctoring(){
   AIP.active=false;clearInterval(AIP.faceInterval);clearInterval(AIP.audioInterval);
@@ -3981,11 +4039,11 @@ function runFaceCheck(){
   }
   AIP.lastFrame=now2;
   const motionR=motionPx/(total/step);
-  if(skinR<0.008){AIP.noFaceStreak++;if(AIP.noFaceStreak>=5){aiFlag('face_absent','No face detected — candidate may have left','warn');AIP.noFaceStreak=0;}}
+  if(skinR<0.008){AIP.noFaceStreak++;if(AIP.noFaceStreak>=4){aiFlag('face_absent','No face detected — candidate may have left','warn');AIP.noFaceStreak=0;}}
   else AIP.noFaceStreak=0;
-  if(skinR>0.5){AIP.multiFaceStreak++;if(AIP.multiFaceStreak>=4){aiFlag('multi_face','Multiple persons detected','crit');AIP.multiFaceStreak=0;}}
+  if(skinR>0.45){AIP.multiFaceStreak++;if(AIP.multiFaceStreak>=3){aiFlag('multi_face','Multiple persons detected','crit');AIP.multiFaceStreak=0;}}
   else AIP.multiFaceStreak=0;
-  if(motionR>0.45){AIP.motionStreak++;if(AIP.motionStreak>=5){aiFlag('bg_motion','Persistent background motion','warn');AIP.motionStreak=0;}}
+  if(motionR>0.38){AIP.motionStreak++;if(AIP.motionStreak>=3){aiFlag('bg_motion','Persistent background motion','warn');AIP.motionStreak=0;}}
   else if(AIP.motionStreak>0)AIP.motionStreak--;
 }
 function runAudioCheck(){
@@ -3995,10 +4053,10 @@ function runAudioCheck(){
   let speech=0;for(let i=3;i<=35;i++)speech+=buf[i];
   const avg=speech/33;
   // A single loud 3-second snapshot (a knock, a cough, ambient noise)
-  // used to flag instantly. Now requires 3 consecutive readings — ~9s of
-  // genuinely sustained speech/whispering — before it counts as a
-  // violation, same "must persist" pattern as the motion/face checks.
-  if(avg>75){AIP.audioStreak++;if(AIP.audioStreak>=3){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
+  // used to flag instantly, which was too strict. Requiring many
+  // consecutive readings was too lenient the other way. 2 consecutive
+  // (~6s of genuinely sustained noise) is the middle ground.
+  if(avg>70){AIP.audioStreak++;if(AIP.audioStreak>=2){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
   else if(AIP.audioStreak>0)AIP.audioStreak--;
 }
 function aiFlag(type,msg,severity){
