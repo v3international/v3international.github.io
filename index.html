@@ -3243,7 +3243,9 @@ function populateIntro(){
 /* ═══════════════════════════════════════════════════════
    EXAM ENGINE
 ═══════════════════════════════════════════════════════ */
+let examInProgress=false;
 function startExam(){
+  examInProgress=true;
   S.secsLeft=CFG.EXAM_SECS;S.startTs=new Date().toISOString();
   $('cam-pip')?.classList.add('on');
   const v=$('pip-video');if(v&&S.camStream)v.srcObject=S.camStream;
@@ -3279,6 +3281,11 @@ const _deb={};
 let _lastViolationAt=0;
 const COALESCE_MS=1500;
 function debouncedLog(key,evt,ms=8000){
+  // The listeners below (fullscreen/tab/focus/keys) stay attached to
+  // `document` for the whole page lifetime, so without this guard,
+  // leaving fullscreen on the "Submission Received" screen — after the
+  // exam is already over — still fired a violation warning.
+  if(!examInProgress)return;
   const now=Date.now();
   if(_deb[key]&&now-_deb[key]<ms)return;
   _deb[key]=now;
@@ -3460,6 +3467,7 @@ let _submitStarted=false;
 function beginFinalSubmit(){
   if(_submitStarted)return;
   _submitStarted=true;
+  examInProgress=false;
   clearInterval(S.timerRef);
   goto('s-thanks'); // navigate away from the exam screen immediately — before any await
   Promise.resolve(finaliseExam()).catch(e=>console.error(e));
@@ -3926,7 +3934,7 @@ function closeVidModal(){
 /* ═══ AI PROCTORING — LOW SENSITIVITY ═══════════════════ */
 const AIP={active:false,canvas:null,ctx:null,audioCtx:null,analyser:null,
   faceInterval:null,audioInterval:null,noFaceStreak:0,multiFaceStreak:0,
-  lastFrame:null,motionStreak:0,flags:[]};
+  lastFrame:null,motionStreak:0,audioStreak:0,flags:[]};
 async function initAIProctoring(){
   if(!S.camStream)return;
   AIP.active=true;
@@ -3937,9 +3945,15 @@ async function initAIProctoring(){
     const src=AIP.audioCtx.createMediaStreamSource(S.camStream);
     AIP.analyser=AIP.audioCtx.createAnalyser();AIP.analyser.fftSize=512;
     src.connect(AIP.analyser);
-    AIP.audioInterval=setInterval(runAudioCheck,3000);
+    // Same 15s settle-in grace period as the face check below — a mic
+    // pop/click or ambient noise right as the camera activates otherwise
+    // flagged instantly, before the candidate had even started.
+    setTimeout(()=>{AIP.audioInterval=setInterval(runAudioCheck,3000);},15000);
   }catch(e){}
-  setTimeout(()=>{AIP.faceInterval=setInterval(runFaceCheck,3500);},8000);
+  // 15s (was 8s) grace period before checks start — time to sit down,
+  // adjust the camera, and let auto-exposure/white-balance settle instead
+  // of reading normal first-moment motion as a violation.
+  setTimeout(()=>{AIP.faceInterval=setInterval(runFaceCheck,3500);},15000);
 }
 function stopAIProctoring(){
   AIP.active=false;clearInterval(AIP.faceInterval);clearInterval(AIP.audioInterval);
@@ -3967,11 +3981,11 @@ function runFaceCheck(){
   }
   AIP.lastFrame=now2;
   const motionR=motionPx/(total/step);
-  if(skinR<0.008){AIP.noFaceStreak++;if(AIP.noFaceStreak>=4){aiFlag('face_absent','No face detected — candidate may have left','warn');AIP.noFaceStreak=0;}}
+  if(skinR<0.008){AIP.noFaceStreak++;if(AIP.noFaceStreak>=5){aiFlag('face_absent','No face detected — candidate may have left','warn');AIP.noFaceStreak=0;}}
   else AIP.noFaceStreak=0;
-  if(skinR>0.45){AIP.multiFaceStreak++;if(AIP.multiFaceStreak>=3){aiFlag('multi_face','Multiple persons detected','crit');AIP.multiFaceStreak=0;}}
+  if(skinR>0.5){AIP.multiFaceStreak++;if(AIP.multiFaceStreak>=4){aiFlag('multi_face','Multiple persons detected','crit');AIP.multiFaceStreak=0;}}
   else AIP.multiFaceStreak=0;
-  if(motionR>0.35){AIP.motionStreak++;if(AIP.motionStreak>=4){aiFlag('bg_motion','Persistent background motion','warn');AIP.motionStreak=0;}}
+  if(motionR>0.45){AIP.motionStreak++;if(AIP.motionStreak>=5){aiFlag('bg_motion','Persistent background motion','warn');AIP.motionStreak=0;}}
   else if(AIP.motionStreak>0)AIP.motionStreak--;
 }
 function runAudioCheck(){
@@ -3980,7 +3994,12 @@ function runAudioCheck(){
   AIP.analyser.getByteFrequencyData(buf);
   let speech=0;for(let i=3;i<=35;i++)speech+=buf[i];
   const avg=speech/33;
-  if(avg>65)aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');
+  // A single loud 3-second snapshot (a knock, a cough, ambient noise)
+  // used to flag instantly. Now requires 3 consecutive readings — ~9s of
+  // genuinely sustained speech/whispering — before it counts as a
+  // violation, same "must persist" pattern as the motion/face checks.
+  if(avg>75){AIP.audioStreak++;if(AIP.audioStreak>=3){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
+  else if(AIP.audioStreak>0)AIP.audioStreak--;
 }
 function aiFlag(type,msg,severity){
   const ts=new Date().toLocaleTimeString('en-GB');
