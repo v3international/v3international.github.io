@@ -1101,11 +1101,11 @@ body.light .modal{background:#fff}
           <table class="log-table">
             <thead><tr>
               <th>Candidate</th><th>Discipline</th><th>Division</th>
-              <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th>
+              <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th><th>Issued By</th>
               <th>Revoke</th><th>Delete / Copy</th>
             </tr></thead>
             <tbody id="master-tok-body">
-              <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted)">Click the tab to load tokens.</td></tr>
+              <tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)">Click the tab to load tokens.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1394,10 +1394,10 @@ body.light .modal{background:#fff}
             <table class="log-table">
               <thead><tr>
                 <th>Candidate</th><th>Discipline</th><th>Division</th>
-                <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th><th>Action</th>
+                <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th><th>Issued By</th><th>Action</th>
               </tr></thead>
               <tbody id="tok-log-body">
-                <tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted)">No tokens yet.</td></tr>
+                <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted)">No tokens yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -2723,7 +2723,7 @@ function masterClearFilters(){
 
 function renderMasterTokTable(toks){
   const el=$('master-tok-body');if(!el)return;
-  if(!toks.length){el.innerHTML='<tr><td colspan="9" style="padding:16px;text-align:center;color:var(--muted)">No tokens.</td></tr>';return;}
+  if(!toks.length){el.innerHTML='<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--muted)">No tokens.</td></tr>';return;}
   const sorted=toks.sort((a,b)=>new Date(b.created)-new Date(a.created));
   el.innerHTML=sorted.map(t=>{
     const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted'};
@@ -2743,6 +2743,7 @@ function renderMasterTokTable(toks){
       <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${new Date(t.expires).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</td>
       <td><span class="tok-status ${stClass}">${stLabel}</span></td>
       <td style="font-family:var(--mono);font-size:.65rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
+      <td style="font-size:.78rem;color:var(--txt)">${escH(t.issuedBy||'—')}</td>
       <td>
         ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');masterRefreshTokens()">Revoke</button>`:'—'}
       </td>
@@ -2772,6 +2773,10 @@ async function checkOperatorGate(){
   const v=$('operator-gate-pass').value;
   if(await verifyPassRemote('hr',v)){
     hideErr('operator-gate-err');$('operator-gate-pass').value='';
+    // Record who this is, if they logged in with a named Team Access
+    // passcode — used as "Issued By" on links they generate. Falls back
+    // to a generic label for the old shared HR password (no named match).
+    sessionStorage.setItem('v3_hr_name',_lastVerifiedName||'HR/Operator');
     enterOperatorDashboard();
   }else{showErr('operator-gate-err','Incorrect HR password.');$('operator-gate-pass').value='';}
 }
@@ -2781,6 +2786,7 @@ function enterOperatorDashboard(){
 }
 function signOutOperator(){
   sessionStorage.removeItem('v3_operator_session');
+  sessionStorage.removeItem('v3_hr_name');
   goto('s-role');
 }
 
@@ -3026,7 +3032,8 @@ async function generateBulkTokens(){
   for(let i=0;i<qty;i++){
     if(btn)btn.textContent=qty>1?`Generating ${i+1}/${qty}…`:'Generating…';
     const cname=qty>1?`${name} (${i+1})`:name;
-    const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs});
+    const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs,
+      issuedBy:sessionStorage.getItem('v3_hr_name')||'HR/Operator'});
     if(!synced)failedSyncs++;
     links.push({id,url:`${base}?token=${id}`,name:cname});
   }
@@ -3089,7 +3096,7 @@ function applyFiltersAndRender(toks){
 function renderTokLog(toks){
   const el=$('tok-log-body');if(!el)return;
   const sorted=toks.sort((a,b)=>new Date(b.created)-new Date(a.created)).slice(0,300);
-  if(!sorted.length){el.innerHTML='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted);font-size:.85rem">No tokens match the current filters.</td></tr>';return;}
+  if(!sorted.length){el.innerHTML='<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted);font-size:.85rem">No tokens match the current filters.</td></tr>';return;}
   el.innerHTML=sorted.map(t=>{
     const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted'};
     const parts=(stMap[t.status]||'tok-s-active Active').split(' ');
@@ -3106,6 +3113,7 @@ function renderTokLog(toks){
       <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${new Date(t.expires).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</td>
       <td><span class="tok-status ${stClass}">${stLabel}</span></td>
       <td style="font-family:var(--mono);font-size:.66rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
+      <td style="color:var(--txt)">${escH(t.issuedBy||'—')}</td>
       <td>
         ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');refreshDashboard()">Revoke</button>`:''}
         ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px" onclick="openSheetRow('${escH(t.email||'')}')">📊 Open in Sheet</button>`:''}
@@ -3130,10 +3138,17 @@ const S={
   submissionTs:'',  // shared across all three upload payloads
 };
 
+// Held only for the in-person session about to be launched — Test Taker
+// mode deliberately never persists a session across a refresh (see the
+// comment on restoreStaffSession()), so this isn't saved to sessionStorage.
+let _takerIssuerName='';
 async function checkTakerGate(){
   const v=$('taker-gate-pass').value;
-  if(await verifyPassRemote('hr',v)){hideErr('taker-gate-err');$('taker-gate-pass').value='';goto('s-setup');}
-  else{showErr('taker-gate-err','Incorrect HR password.');$('taker-gate-pass').value='';}
+  if(await verifyPassRemote('hr',v)){
+    hideErr('taker-gate-err');$('taker-gate-pass').value='';
+    _takerIssuerName=_lastVerifiedName||'HR/Operator';
+    goto('s-setup');
+  }else{showErr('taker-gate-err','Incorrect HR password.');$('taker-gate-pass').value='';}
 }
 
 let _div='',_disc='',_discKey='',_sen='';
@@ -3201,7 +3216,8 @@ async function launchSession(){
   const phone=$('f-phone')?.value.trim()||'';
   const launchBtn=$('launch-session-btn');
   if(launchBtn){launchBtn.disabled=true;launchBtn.textContent='Preparing exam…';}
-  const {id:tokenId,synced}=await createToken({name,email,phone,position:pos,discKey:_discKey,seniority:_sen,expiryHrs:6});
+  const {id:tokenId,synced}=await createToken({name,email,phone,position:pos,discKey:_discKey,seniority:_sen,expiryHrs:6,
+    issuedBy:_takerIssuerName||'HR/Operator'});
   if(!synced){
     if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
     return showErr('setup-err','Could not connect to the exam backend — check the connection and try again.');
@@ -3212,7 +3228,7 @@ async function launchSession(){
   S.qs=drawn;S.tokenId=tokenId;
   S.name=name;S.email=email;S.phone=phone;S.position=pos;
   S.discKey=_discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=_sen;
-  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;
+  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;_submitStarted=false;
   populateIntro();goto('s-intro');
 }
 function populateIntro(){
@@ -3235,7 +3251,7 @@ function startExam(){
   buildTracker();updateTimer();
   S.timerRef=setInterval(()=>{
     S.secsLeft--;updateTimer();
-    if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');finaliseExam();},3200);}
+    if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');beginFinalSubmit();},3200);}
   },1000);
   attachProctoring();startVideoRecording();initAIProctoring();
   // Request fullscreen — best-effort (silently ignored if browser refuses)
@@ -3432,7 +3448,23 @@ function confirmSubmit(){
   $('confirm-bg').classList.add('on');
 }
 function closeModal(){$('confirm-bg').classList.remove('on');}
-function doSubmit(){closeModal();clearInterval(S.timerRef);Promise.resolve(finaliseExam()).catch(e=>console.error(e));}
+// Re-entry guard: doSubmit() used to close the confirm modal and then
+// AWAIT a network round-trip (gradeExamRemote) before ever navigating away
+// from the exam screen — leaving the exam fully visible and clickable
+// (Submit button included) for however long that took, so a candidate
+// could submit a second time before the first attempt had even finished.
+let _submitStarted=false;
+// Shared by the manual Submit button AND the timer-expiry auto-submit
+// (see startExam()'s setTimeout) so neither path can race the other, and
+// so time-out auto-submit gets the same immediate away-navigation.
+function beginFinalSubmit(){
+  if(_submitStarted)return;
+  _submitStarted=true;
+  clearInterval(S.timerRef);
+  goto('s-thanks'); // navigate away from the exam screen immediately — before any await
+  Promise.resolve(finaliseExam()).catch(e=>console.error(e));
+}
+function doSubmit(){closeModal();beginFinalSubmit();}
 async function finaliseExam(){
   S.endTs        = new Date().toISOString();
   S.submissionTs = new Date().toISOString(); // shared across all upload payloads
@@ -3458,7 +3490,8 @@ async function finaliseExam(){
   }
   if(S.tokenId) completeToken(S.tokenId);
 
-  goto('s-thanks'); // show thanks immediately
+  // (already navigated to s-thanks in doSubmit(), before this function's
+  // first await — see the guard comment there)
 
   // Step 1: write the exam row to the sheet and WAIT for confirmation
   await submitToSheets();
@@ -3504,6 +3537,12 @@ async function gsPost(payload){
    to ask again — it is never written to storage or logged anywhere.
 ─────────────────────────────────────────────────────────────────── */
 let _masterPassCache='';
+// Set as a side effect of a successful 'hr' verify — the named Team
+// Access person who just logged in (Code.gs v8.5+ returns this), or ''
+// for the old shared HR password with no named match. Callers that need
+// to record who issued a candidate link read this right after a
+// successful checkOperatorGate()/checkTakerGate() call.
+let _lastVerifiedName='';
 async function verifyPassRemote(role,pass){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR')){
     showToast('Cannot verify — Apps Script not connected. Contact Master.','err');
@@ -3514,6 +3553,7 @@ async function verifyPassRemote(role,pass){
       {method:'GET',redirect:'follow'});
     const text=await resp.text();
     const data=JSON.parse(text);
+    _lastVerifiedName=data?.name||'';
     return !!data?.ok;
   }catch(e){
     showToast('Cannot verify password — network error. Try again.','err');
@@ -3989,7 +4029,7 @@ async function initTokenMode(){
     S.qs=drawn;
     S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
     S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
-    S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;
+    S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;_submitStarted=false;
     populateIntro();goto('s-cam-gate');
   }catch(e){
     console.error('V3: token init failed:',e);
