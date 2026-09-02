@@ -3809,16 +3809,20 @@ function buildReport(){
   // most people reviewing results only need the summary/score, not the
   // full answer key. unlockQA() (defined in generateAndUploadPdf(), only
   // present in the exported standalone file) reveals every gated table
-  // at once, for whoever is authorized to check specific answers.
-  function qaGate(tableHtml){return `<div class="qa-locked">
+  // on the page at once — one passkey entry unlocks both Page 2 and
+  // Page 3. Only the FIRST gate (showForm=true, Page 2) renders the
+  // actual password field; Page 3's is a plain locked notice with no
+  // input of its own, so the passkey is only ever entered once.
+  function qaGate(tableHtml,showForm){return `<div class="qa-locked">
       <div class="qa-lock-icon">🔒</div>
       <div class="qa-lock-title">Detailed Q&amp;A Breakdown — Hidden</div>
-      <div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Admin passkey to review them for this candidate.</div>
+      ${showForm ? `<div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Admin passkey to review them for this candidate — unlocking here also reveals Page 3.</div>
       <div class="qa-pass-row">
         <input type="password" class="qa-pass-input" placeholder="Admin passkey" onkeydown="if(event.key==='Enter')unlockQA(this.nextElementSibling)">
         <button class="qa-unlock-btn" onclick="unlockQA(this)">Unlock</button>
       </div>
-      <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>
+      <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>`
+      : `<div class="qa-lock-desc">Enter the Admin passkey on Page 2 to unlock this section too.</div>`}
     </div>
     <div class="qa-real-content" style="display:none">${tableHtml}</div>`;}
 
@@ -3936,7 +3940,7 @@ function buildReport(){
         <div class="qa-pg-sub">${S.score} correct \xb7 ${wrong} wrong \xb7 ${skipped} unanswered \xb7 ${Math.min(10,totalQs)} shown</div>
       </div>
     </div>
-    ${qaGate(pg2Table)}
+    ${qaGate(pg2Table,true)}
     ${pgFtr(2,3)}
   </div>`;
 
@@ -3973,7 +3977,7 @@ function buildReport(){
         <div class="qa-pg-sub">${S.score} correct \xb7 ${wrong} wrong \xb7 ${skipped} unanswered \xb7 ${totalQs} total</div>
       </div>
     </div>
-    ${qaGate(pg3Table)}
+    ${qaGate(pg3Table,false)}
     <div class="flog-sec">
       <div class="r-sec-lbl">\u{1F50D} Proctoring &amp; Forensic Log</div>
       <div style="font-size:.78rem;color:#555;margin-bottom:7px">Focus violations: ${S.blurCount} &nbsp;|&nbsp; ${vidLinkHtml}</div>
