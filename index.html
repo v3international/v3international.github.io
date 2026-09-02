@@ -122,6 +122,13 @@ body.light .tb-logo-lt{display:block}
 }
 body:not(.light) .fld select option{background:#0d1625;color:#E8E2D6}
 body.light .fld select{background:#fff;color:#1C1A17}
+/* Division names appear as <optgroup> labels inside every discipline
+   dropdown. Only <option> had a dark-mode color before, so the browser's
+   unstyled default optgroup rendering (light gray) was almost unreadable
+   against a dark dropdown. Cover every select on the page, not just .fld
+   ones — qb-disc-sel, mf-disc, filter-disc, tp-disc all use optgroups. */
+body:not(.light) select optgroup{background:#0d1625;color:#E8E2D6}
+body:not(.light) select option{background:#0d1625;color:#E8E2D6}
 .err{color:#f56a6a;font-size:.78rem;margin-top:4px;display:none}
 .err.on{display:block}
 body.light .err{color:#c0392b}
@@ -1094,11 +1101,11 @@ body.light .modal{background:#fff}
           <table class="log-table">
             <thead><tr>
               <th>Candidate</th><th>Discipline</th><th>Division</th>
-              <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th>
+              <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th><th>Issued By</th>
               <th>Revoke</th><th>Delete / Copy</th>
             </tr></thead>
             <tbody id="master-tok-body">
-              <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted)">Click the tab to load tokens.</td></tr>
+              <tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)">Click the tab to load tokens.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1387,10 +1394,10 @@ body.light .modal{background:#fff}
             <table class="log-table">
               <thead><tr>
                 <th>Candidate</th><th>Discipline</th><th>Division</th>
-                <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th><th>Action</th>
+                <th>Issued</th><th>Expires</th><th>Status</th><th>Token ID</th><th>Issued By</th><th>Action</th>
               </tr></thead>
               <tbody id="tok-log-body">
-                <tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted)">No tokens yet.</td></tr>
+                <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted)">No tokens yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1543,17 +1550,28 @@ body.light .modal{background:#fff}
         <div class="meta-cell"><div class="meta-k">Session Mode</div><div class="meta-v">Proctored · Recorded</div></div>
       </div>
       <div class="rules-warn">
-        ⚠️ This exam runs in <strong>fullscreen</strong> and is strictly proctored. Read every rule below before you click Start — leaving fullscreen or switching away from this window counts as a violation, and repeated violations will end your exam automatically.
+        ⚠️ This exam runs in <strong>fullscreen</strong> and is strictly proctored. Read every rule below before you click Start.
       </div>
+
+      <div class="meta-k" style="margin-top:6px">Proctoring — throughout the exam</div>
       <ul class="rules">
-        <li>Clicking <strong>Start Examination</strong> puts your browser into fullscreen. Stay in fullscreen for the entire exam.</li>
-        <li>Do not switch tabs, switch to another program, minimise the window, or navigate away — each one is logged as a violation, with a warning shown on screen every time.</li>
-        <li id="rules-strike-limit">After <strong>3</strong> violations, your exam is submitted automatically as incomplete and flagged for review — you cannot undo this.</li>
         <li>Your camera and microphone stay on and this session is recorded for the entire exam, with no exceptions.</li>
-        <li>Navigate freely between questions using the tracker or the Prev / Next buttons before you submit.</li>
+        <li>Clicking <strong>Start Examination</strong> puts your browser into fullscreen. Stay in fullscreen until you submit.</li>
+        <li>Do not switch tabs, switch to another program, minimise the window, or exit fullscreen — each one is logged as a violation, with a warning shown on screen every time it happens.</li>
+        <li>Violations do not stop your exam. They are recorded and flagged in your report for HR to review after you finish.</li>
+      </ul>
+
+      <div class="meta-k" style="margin-top:14px">Taking the exam</div>
+      <ul class="rules">
         <li>The 30-minute timer starts the moment you click <strong>Start Examination</strong> and cannot be paused.</li>
+        <li>Navigate freely between questions using the tracker or the Prev / Next buttons before you submit.</li>
+      </ul>
+
+      <div class="meta-k" style="margin-top:14px">After you submit</div>
+      <ul class="rules">
         <li>Your result, video, and full report go directly to HR once you submit — there is nothing further for you to do after that.</li>
       </ul>
+
       <div class="intro-actions">
         <button class="btn btn-gold" onclick="startExam()">Start Examination →</button>
       </div>
@@ -2705,7 +2723,7 @@ function masterClearFilters(){
 
 function renderMasterTokTable(toks){
   const el=$('master-tok-body');if(!el)return;
-  if(!toks.length){el.innerHTML='<tr><td colspan="9" style="padding:16px;text-align:center;color:var(--muted)">No tokens.</td></tr>';return;}
+  if(!toks.length){el.innerHTML='<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--muted)">No tokens.</td></tr>';return;}
   const sorted=toks.sort((a,b)=>new Date(b.created)-new Date(a.created));
   el.innerHTML=sorted.map(t=>{
     const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted'};
@@ -2725,6 +2743,7 @@ function renderMasterTokTable(toks){
       <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${new Date(t.expires).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</td>
       <td><span class="tok-status ${stClass}">${stLabel}</span></td>
       <td style="font-family:var(--mono);font-size:.65rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
+      <td style="font-size:.78rem;color:var(--txt)">${escH(t.issuedBy||'—')}</td>
       <td>
         ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');masterRefreshTokens()">Revoke</button>`:'—'}
       </td>
@@ -2754,6 +2773,10 @@ async function checkOperatorGate(){
   const v=$('operator-gate-pass').value;
   if(await verifyPassRemote('hr',v)){
     hideErr('operator-gate-err');$('operator-gate-pass').value='';
+    // Record who this is, if they logged in with a named Team Access
+    // passcode — used as "Issued By" on links they generate. Falls back
+    // to a generic label for the old shared HR password (no named match).
+    sessionStorage.setItem('v3_hr_name',_lastVerifiedName||'HR/Operator');
     enterOperatorDashboard();
   }else{showErr('operator-gate-err','Incorrect HR password.');$('operator-gate-pass').value='';}
 }
@@ -2763,6 +2786,7 @@ function enterOperatorDashboard(){
 }
 function signOutOperator(){
   sessionStorage.removeItem('v3_operator_session');
+  sessionStorage.removeItem('v3_hr_name');
   goto('s-role');
 }
 
@@ -3008,7 +3032,8 @@ async function generateBulkTokens(){
   for(let i=0;i<qty;i++){
     if(btn)btn.textContent=qty>1?`Generating ${i+1}/${qty}…`:'Generating…';
     const cname=qty>1?`${name} (${i+1})`:name;
-    const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs});
+    const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs,
+      issuedBy:sessionStorage.getItem('v3_hr_name')||'HR/Operator'});
     if(!synced)failedSyncs++;
     links.push({id,url:`${base}?token=${id}`,name:cname});
   }
@@ -3071,7 +3096,7 @@ function applyFiltersAndRender(toks){
 function renderTokLog(toks){
   const el=$('tok-log-body');if(!el)return;
   const sorted=toks.sort((a,b)=>new Date(b.created)-new Date(a.created)).slice(0,300);
-  if(!sorted.length){el.innerHTML='<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted);font-size:.85rem">No tokens match the current filters.</td></tr>';return;}
+  if(!sorted.length){el.innerHTML='<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted);font-size:.85rem">No tokens match the current filters.</td></tr>';return;}
   el.innerHTML=sorted.map(t=>{
     const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted'};
     const parts=(stMap[t.status]||'tok-s-active Active').split(' ');
@@ -3088,6 +3113,7 @@ function renderTokLog(toks){
       <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${new Date(t.expires).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})}</td>
       <td><span class="tok-status ${stClass}">${stLabel}</span></td>
       <td style="font-family:var(--mono);font-size:.66rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
+      <td style="color:var(--txt)">${escH(t.issuedBy||'—')}</td>
       <td>
         ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');refreshDashboard()">Revoke</button>`:''}
         ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px" onclick="openSheetRow('${escH(t.email||'')}')">📊 Open in Sheet</button>`:''}
@@ -3112,10 +3138,17 @@ const S={
   submissionTs:'',  // shared across all three upload payloads
 };
 
+// Held only for the in-person session about to be launched — Test Taker
+// mode deliberately never persists a session across a refresh (see the
+// comment on restoreStaffSession()), so this isn't saved to sessionStorage.
+let _takerIssuerName='';
 async function checkTakerGate(){
   const v=$('taker-gate-pass').value;
-  if(await verifyPassRemote('hr',v)){hideErr('taker-gate-err');$('taker-gate-pass').value='';goto('s-setup');}
-  else{showErr('taker-gate-err','Incorrect HR password.');$('taker-gate-pass').value='';}
+  if(await verifyPassRemote('hr',v)){
+    hideErr('taker-gate-err');$('taker-gate-pass').value='';
+    _takerIssuerName=_lastVerifiedName||'HR/Operator';
+    goto('s-setup');
+  }else{showErr('taker-gate-err','Incorrect HR password.');$('taker-gate-pass').value='';}
 }
 
 let _div='',_disc='',_discKey='',_sen='';
@@ -3183,7 +3216,8 @@ async function launchSession(){
   const phone=$('f-phone')?.value.trim()||'';
   const launchBtn=$('launch-session-btn');
   if(launchBtn){launchBtn.disabled=true;launchBtn.textContent='Preparing exam…';}
-  const {id:tokenId,synced}=await createToken({name,email,phone,position:pos,discKey:_discKey,seniority:_sen,expiryHrs:6});
+  const {id:tokenId,synced}=await createToken({name,email,phone,position:pos,discKey:_discKey,seniority:_sen,expiryHrs:6,
+    issuedBy:_takerIssuerName||'HR/Operator'});
   if(!synced){
     if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
     return showErr('setup-err','Could not connect to the exam backend — check the connection and try again.');
@@ -3194,7 +3228,7 @@ async function launchSession(){
   S.qs=drawn;S.tokenId=tokenId;
   S.name=name;S.email=email;S.phone=phone;S.position=pos;
   S.discKey=_discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=_sen;
-  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;
+  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;_submitStarted=false;
   populateIntro();goto('s-intro');
 }
 function populateIntro(){
@@ -3204,9 +3238,6 @@ function populateIntro(){
   if($('m-level'))$('m-level').textContent=S.seniority==='entry'?'Entry (0–5 yrs)':'Senior (5+ yrs)';
   if($('m-pos'))$('m-pos').textContent=S.position;
   if($('intro-tag'))$('intro-tag').textContent=S.discipline+' · '+(S.seniority.charAt(0).toUpperCase()+S.seniority.slice(1));
-  const lim=CFG.MAX_VIOLATIONS||3;
-  const strikeEl=$('rules-strike-limit');
-  if(strikeEl) strikeEl.innerHTML=`After <strong>${lim}</strong> violation${lim===1?'':'s'}, your exam is submitted automatically as incomplete and flagged for review — you cannot undo this.`;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -3220,7 +3251,7 @@ function startExam(){
   buildTracker();updateTimer();
   S.timerRef=setInterval(()=>{
     S.secsLeft--;updateTimer();
-    if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');finaliseExam();},3200);}
+    if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');beginFinalSubmit();},3200);}
   },1000);
   attachProctoring();startVideoRecording();initAIProctoring();
   // Request fullscreen — best-effort (silently ignored if browser refuses)
@@ -3239,38 +3270,38 @@ function updateTimer(){
   else if(S.secsLeft<=300)el.classList.add('warn');
 }
 
-/* Proctoring — low sensitivity, debounced */
+/* Proctoring — debounced per event type, and coalesced across types: a
+   single real action (e.g. alt-tabbing away) fires window blur, tab-hidden,
+   and fullscreen-exit within the same instant, which used to log as 2-3
+   separate violations for one action. _lastViolationAt collapses anything
+   within COALESCE_MS of the last logged violation into that same one. */
 const _deb={};
+let _lastViolationAt=0;
+const COALESCE_MS=1500;
 function debouncedLog(key,evt,ms=8000){
   const now=Date.now();
   if(_deb[key]&&now-_deb[key]<ms)return;
   _deb[key]=now;
+  if(now-_lastViolationAt<COALESCE_MS)return;
+  _lastViolationAt=now;
   S.blurCount++;S.forensics.push({ts:new Date().toLocaleTimeString('en-GB'),ev:evt});
   updateProctorBadge();
   handleViolationEscalation(evt);
 }
-/* Enforcement: every detected violation (tab switch, lost focus, exiting
-   fullscreen, a blocked DevTools shortcut) shows the candidate a clear
-   warning with a strike count. Reaching CFG.MAX_VIOLATIONS auto-submits
-   the exam as flagged — a real consequence, not just a silent log entry. */
+/* Every detected violation (tab switch, lost focus, exiting fullscreen, a
+   blocked DevTools shortcut) shows the candidate a clear on-screen warning
+   so they know it was recorded. The exam is never auto-submitted over
+   this — violations are only ever flagged in the report for HR to review
+   after the candidate finishes, never used to cut the exam short. */
 function handleViolationEscalation(evt){
-  const max=CFG.MAX_VIOLATIONS||3;
-  const isFinal=S.blurCount>=max;
-  showViolationModal(evt,isFinal);
-  if(isFinal){
-    S.autoSubmittedForViolations=true;
-    setTimeout(()=>{ $('viol-bg')?.classList.remove('on'); doSubmit(); },2500);
-  }
+  showViolationModal(evt);
 }
-function showViolationModal(evt,isFinal){
+function showViolationModal(evt){
   const bg=$('viol-bg'); if(!bg) return;
-  const max=CFG.MAX_VIOLATIONS||3;
-  if($('viol-count'))$('viol-count').textContent=`(${S.blurCount}/${max})`;
+  if($('viol-count'))$('viol-count').textContent=`(${S.blurCount})`;
   if($('viol-msg'))$('viol-msg').textContent=evt;
-  if($('viol-warn'))$('viol-warn').textContent = isFinal
-    ? 'Maximum violations reached — your exam is being submitted automatically.'
-    : `${max-S.blurCount} more violation(s) will end your exam automatically.`;
-  const btns=bg.querySelector('.modal-btns'); if(btns) btns.style.display = isFinal ? 'none' : '';
+  if($('viol-warn'))$('viol-warn').textContent='This has been recorded and will be flagged for HR review.';
+  const btns=bg.querySelector('.modal-btns'); if(btns) btns.style.display='';
   bg.classList.add('on');
 }
 function acknowledgeViolation(){
@@ -3417,7 +3448,23 @@ function confirmSubmit(){
   $('confirm-bg').classList.add('on');
 }
 function closeModal(){$('confirm-bg').classList.remove('on');}
-function doSubmit(){closeModal();clearInterval(S.timerRef);Promise.resolve(finaliseExam()).catch(e=>console.error(e));}
+// Re-entry guard: doSubmit() used to close the confirm modal and then
+// AWAIT a network round-trip (gradeExamRemote) before ever navigating away
+// from the exam screen — leaving the exam fully visible and clickable
+// (Submit button included) for however long that took, so a candidate
+// could submit a second time before the first attempt had even finished.
+let _submitStarted=false;
+// Shared by the manual Submit button AND the timer-expiry auto-submit
+// (see startExam()'s setTimeout) so neither path can race the other, and
+// so time-out auto-submit gets the same immediate away-navigation.
+function beginFinalSubmit(){
+  if(_submitStarted)return;
+  _submitStarted=true;
+  clearInterval(S.timerRef);
+  goto('s-thanks'); // navigate away from the exam screen immediately — before any await
+  Promise.resolve(finaliseExam()).catch(e=>console.error(e));
+}
+function doSubmit(){closeModal();beginFinalSubmit();}
 async function finaliseExam(){
   S.endTs        = new Date().toISOString();
   S.submissionTs = new Date().toISOString(); // shared across all upload payloads
@@ -3443,7 +3490,8 @@ async function finaliseExam(){
   }
   if(S.tokenId) completeToken(S.tokenId);
 
-  goto('s-thanks'); // show thanks immediately
+  // (already navigated to s-thanks in doSubmit(), before this function's
+  // first await — see the guard comment there)
 
   // Step 1: write the exam row to the sheet and WAIT for confirmation
   await submitToSheets();
@@ -3489,6 +3537,12 @@ async function gsPost(payload){
    to ask again — it is never written to storage or logged anywhere.
 ─────────────────────────────────────────────────────────────────── */
 let _masterPassCache='';
+// Set as a side effect of a successful 'hr' verify — the named Team
+// Access person who just logged in (Code.gs v8.5+ returns this), or ''
+// for the old shared HR password with no named match. Callers that need
+// to record who issued a candidate link read this right after a
+// successful checkOperatorGate()/checkTakerGate() call.
+let _lastVerifiedName='';
 async function verifyPassRemote(role,pass){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR')){
     showToast('Cannot verify — Apps Script not connected. Contact Master.','err');
@@ -3499,6 +3553,7 @@ async function verifyPassRemote(role,pass){
       {method:'GET',redirect:'follow'});
     const text=await resp.text();
     const data=JSON.parse(text);
+    _lastVerifiedName=data?.name||'';
     return !!data?.ok;
   }catch(e){
     showToast('Cannot verify password — network error. Try again.','err');
@@ -3842,12 +3897,6 @@ function buildReport(){
       <div class="flog2">${forensicRows}</div>
       ${aiRows}
     </div>
-    <div class="sig-block">
-      <div class="sig-row">
-        <div class="sig-item"><div class="sl">HR Representative</div><div class="sd">Date: _______________</div></div>
-        <div class="sig-item"><div class="sl">Technical Review Authority</div><div class="sd">Date: _______________</div></div>
-      </div>
-    </div>
     ${pgFtr(3,3)}
   </div>`;
 
@@ -3953,24 +4002,39 @@ function getTokenFromURL(){return new URLSearchParams(location.search).get('toke
 async function initTokenMode(){
   const tokId=getTokenFromURL();if(!tokId)return;
   goto('s-boot'); // belt-and-suspenders — html.tok-boot CSS already hides s-role
-  const result=await validateToken(tokId);
-  if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
-  if(result.err)return showTokenError(result.msg);
-  const tok=result.tok;
-  // Cache the resolved token locally so lockToken()/completeToken() (which
-  // look it up by id) find it — a short link has no local copy yet on a
-  // brand-new device even though validateToken() just resolved it fine.
-  const _s=getTokStore();_s[tokId]=tok;saveTokStore(_s);
-  lockToken(tokId);S.tokenId=tokId;
-  const info=discLabelInfo(tok.discKey);
-  if(!info)return showTokenError('Invalid discipline. Contact HR.');
-  const drawn=await startExamRemote(tokId);
-  if(!drawn||drawn.length<1)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
-  S.qs=drawn;
-  S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
-  S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
-  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;
-  populateIntro();goto('s-cam-gate');
+  // Everything below can throw (a malformed backend response, a token whose
+  // status doesn't match any case here, etc). Without this try/catch, an
+  // uncaught error left the candidate stuck on the s-boot spinner forever —
+  // a blank screen instead of a clear "Access Denied" message. Any failure
+  // now always resolves to a visible error screen.
+  try{
+    const result=await validateToken(tokId);
+    if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
+    if(result.err)return showTokenError(result.msg);
+    const tok=result.tok;
+    // A token stuck 'inprogress' from an earlier attempt (e.g. the candidate
+    // closed the tab mid-exam, or submission never completed) must not let
+    // the same link be reopened and reused — otherwise the same exam can be
+    // taken repeatedly, each attempt logged as its own row.
+    if(tok.status==='inprogress')return showTokenError('This exam session was already started and cannot be resumed or retaken. Contact HR.');
+    // Cache the resolved token locally so lockToken()/completeToken() (which
+    // look it up by id) find it — a short link has no local copy yet on a
+    // brand-new device even though validateToken() just resolved it fine.
+    const _s=getTokStore();_s[tokId]=tok;saveTokStore(_s);
+    lockToken(tokId);S.tokenId=tokId;
+    const info=discLabelInfo(tok.discKey);
+    if(!info)return showTokenError('Invalid discipline. Contact HR.');
+    const drawn=await startExamRemote(tokId);
+    if(!drawn||drawn.length<1)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
+    S.qs=drawn;
+    S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
+    S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
+    S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;_submitStarted=false;
+    populateIntro();goto('s-cam-gate');
+  }catch(e){
+    console.error('V3: token init failed:',e);
+    showTokenError('Something went wrong opening this link. Reopen it, or contact HR if the problem continues.');
+  }
 }
 function showTokenError(msg){
   document.body.innerHTML=`<div class="tok-err"><div class="tok-err-box">
