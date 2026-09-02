@@ -1002,8 +1002,8 @@ body.light .modal{background:#fff}
             </div>
             <span class="err" id="team-err"></span>
             <table class="log-table" style="margin-top:10px">
-              <thead><tr><th>Name</th><th>Status</th><th>Added</th><th>Action</th></tr></thead>
-              <tbody id="team-body"><tr><td colspan="4" style="padding:16px;text-align:center;color:var(--muted)">Loading…</td></tr></tbody>
+              <thead><tr><th>Name</th><th>Passcode</th><th>Status</th><th>Added</th><th>Action</th></tr></thead>
+              <tbody id="team-body"><tr><td colspan="5" style="padding:16px;text-align:center;color:var(--muted)">Loading…</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -1908,19 +1908,23 @@ async function saveCredentials(){
    code, and revoking one person never affects anyone else's access. */
 async function renderTeamPanel(){
   const el=$('team-body'); if(!el) return;
-  el.innerHTML='<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--muted)">Loading…</td></tr>';
+  el.innerHTML='<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--muted)">Loading…</td></tr>';
   const resp=await gsPost({action:'list_hr_users',currentMaster:_masterPassCache});
   if(!resp?.ok){
-    el.innerHTML=`<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--fail)">Could not load — ${escH(resp?.error||'check Apps Script connection')}</td></tr>`;
+    el.innerHTML=`<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--fail)">Could not load — ${escH(resp?.error||'check Apps Script connection')}</td></tr>`;
     return;
   }
   const users=resp.users||[];
   if(!users.length){
-    el.innerHTML='<tr><td colspan="4" style="padding:16px;text-align:center;color:var(--muted)">No one added yet — anyone with the shared HR password (Credentials tab) can still log in until you add people here.</td></tr>';
+    el.innerHTML='<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--muted)">No one added yet — anyone with the shared HR password (Credentials tab) can still log in until you add people here.</td></tr>';
     return;
   }
+  // u.passcode: Code.gs v8.5+ returns it here (this call is already
+  // Master-password-authenticated) so it can be shown to Master as a
+  // reminder, without needing to reset it.
   el.innerHTML=users.map(u=>`<tr>
     <td style="font-weight:700">${escH(u.name)}</td>
+    <td style="font-family:var(--mono);font-size:.8rem">${escH(u.passcode||'—')}</td>
     <td><span class="tok-status ${u.active?'tok-s-active':'tok-s-revoked'}">${u.active?'Active':'Revoked'}</span></td>
     <td style="font-family:var(--mono);font-size:.7rem;color:var(--muted)">${u.created?new Date(u.created).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
     <td>
