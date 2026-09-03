@@ -126,9 +126,11 @@ body.light .fld select{background:#fff;color:#1C1A17}
    dropdown. Only <option> had a dark-mode color before, so the browser's
    unstyled default optgroup rendering (light gray) was almost unreadable
    against a dark dropdown. Cover every select on the page, not just .fld
-   ones — qb-disc-sel, mf-disc, filter-disc, tp-disc all use optgroups. */
-body:not(.light) select optgroup{background:#0d1625;color:#E8E2D6}
-body:not(.light) select option{background:#0d1625;color:#E8E2D6}
+   ones — qb-disc-sel, mf-disc, filter-disc, tp-disc all use optgroups.
+   The group label is styled gold/bold so it reads as a heading over its
+   options rather than blending in as just another row of plain text. */
+body:not(.light) select optgroup{background:#0d1625;color:var(--gold);font-weight:800;font-style:normal}
+body:not(.light) select option{background:#0d1625;color:#E8E2D6;font-weight:400}
 .err{color:#f56a6a;font-size:.78rem;margin-top:4px;display:none}
 .err.on{display:block}
 body.light .err{color:#c0392b}
@@ -3387,14 +3389,24 @@ function startVideoRecording(){
     const ctx=canvas.getContext('2d');
     const vid=$('pip-video');
     const drawInt=setInterval(()=>{if(vid?.videoWidth)ctx.drawImage(vid,0,0,320,240);},100);
-    const stream=canvas.captureStream(10);
-    // 100kbps × a full 30-minute exam = ~22.5MB raw, ~30MB once base64-
-    // encoded for the upload_video POST — too close to Apps Script's
-    // practical request-size ceiling (~50MB) to be reliable, especially
-    // on a candidate's home connection. 56kbps keeps a 30-minute
-    // recording to ~12.6MB raw / ~17MB base64, comfortable margin, still
-    // watchable at this resolution/frame rate for verification purposes.
-    const opts={mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:56000};
+    // canvas.captureStream() only ever produces a VIDEO track — a canvas
+    // element has no audio of its own — so a MediaRecorder built directly
+    // from it can never have sound, no matter the codec/bitrate settings.
+    // This has been true since recording was first built; not a
+    // regression. Combine the canvas's video track with the ORIGINAL
+    // camera stream's real audio track(s) into one stream before handing
+    // it to MediaRecorder.
+    const canvasStream=canvas.captureStream(10);
+    const audioTracks=S.camStream.getAudioTracks();
+    const stream=new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+    // 100kbps video-only × a full 30-minute exam = ~22.5MB raw, ~30MB once
+    // base64-encoded for the upload_video POST — too close to Apps
+    // Script's practical request-size ceiling (~50MB) to be reliable,
+    // especially on a candidate's home connection. 56kbps video + a
+    // modest 24kbps for audio (opus is efficient for speech even at low
+    // bitrate) keeps a 30-minute recording to ~18MB raw / ~24MB base64 —
+    // still comfortable margin, now with audio actually present.
+    const opts={mimeType:'video/webm;codecs=vp8,opus',videoBitsPerSecond:56000,audioBitsPerSecond:24000};
     if(!MediaRecorder.isTypeSupported(opts.mimeType)){delete opts.mimeType;}
     _mr=new MediaRecorder(stream,opts);
     _mr.ondataavailable=e=>{if(e.data?.size>0)_vidChunks.push(e.data);};
@@ -4091,13 +4103,14 @@ function runAudioCheck(){
   AIP.analyser.getByteFrequencyData(buf);
   let speech=0;for(let i=3;i<=35;i++)speech+=buf[i];
   const avg=speech/33;
-  // Threshold lowered substantially (70→45) after live testing showed
-  // even singing wasn't registering — the 3-35 frequency-bin average
-  // this reads apparently runs quieter in practice than expected for a
-  // typical laptop mic at typical gain. 2 consecutive readings (~6s)
-  // still required so it isn't tripped by one loud, brief, incidental
-  // sound, but the bar for "loud enough to matter" is much lower now.
-  if(avg>45){AIP.audioStreak++;if(AIP.audioStreak>=2){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
+  // Threshold history: 70 (too lenient, missed real singing/talking) →
+  // 45 (too strict, tripped on distant office chatter through the mic
+  // even with nobody near the candidate) → 60 now, with the required
+  // consecutive readings raised 2→3 (~9s sustained at 3s/check) so a
+  // brief or distant sound no longer counts — only sustained, closer
+  // speech does. Net effect: meaningfully less sensitive than before
+  // while still catching someone talking through the exam.
+  if(avg>60){AIP.audioStreak++;if(AIP.audioStreak>=3){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
   else if(AIP.audioStreak>0)AIP.audioStreak--;
 }
 function aiFlag(type,msg,severity){
