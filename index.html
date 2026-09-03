@@ -6,8 +6,11 @@
 <title>V3 ME — Proctored Screening Enterprise</title>
 <script>
 /* Runs before the body is parsed: a candidate link (?token=...) must
-   never show the role-selection menu, even for a single frame. */
-if(new URLSearchParams(location.search).get('token')) document.documentElement.classList.add('tok-boot');
+   never show the role-selection menu, even for a single frame. Same
+   applies to an in-person session resuming after a reload — it has no
+   ?token= of its own, but the marker tryResumeInPersonSession() checks
+   is already known here, synchronously, so it gets the same treatment. */
+if(new URLSearchParams(location.search).get('token') || localStorage.getItem('v3_inperson_token')) document.documentElement.classList.add('tok-boot');
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,700;0,800;1,500&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -281,6 +284,12 @@ body:not(.light) .tp-fld select option{background:#0d1625;color:#E8E2D6}
 .bulk-link-txt{font-family:var(--mono);font-size:.65rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--bd-txt)}
 .bulk-copy-btn{padding:3px 8px;border-radius:5px;font-size:.65rem;font-weight:700;cursor:pointer;border:1px solid rgba(201,168,76,.35);background:rgba(201,168,76,.1);color:var(--lbl);white-space:nowrap;flex-shrink:0}
 .bulk-copy-btn:hover{background:rgba(201,168,76,.2)}
+.bulk-send-btn{padding:3px 8px;border-radius:5px;font-size:.65rem;font-weight:700;cursor:pointer;border:1px solid rgba(74,140,201,.4);background:rgba(74,140,201,.12);color:#5b9fd9;white-space:nowrap;flex-shrink:0}
+.bulk-send-btn:hover{background:rgba(74,140,201,.22)}
+.bulk-send-btn:disabled{opacity:.6;cursor:default}
+.bulk-send-status{font-size:.65rem;font-weight:700;white-space:nowrap;flex-shrink:0;min-width:44px}
+.bulk-send-status.ok{color:var(--ok,#1a6b3c)}
+.bulk-send-status.fail{color:var(--fail,#8B2020)}
 /* Filter bar */
 .filter-bar{
   background:var(--surface);border:1px solid var(--card-br);
@@ -1247,6 +1256,7 @@ body.light .modal{background:#fff}
         <div class="panel-body">
           <div class="tp-fld"><label>Candidate Name *</label><input id="tp-name" type="text" placeholder="Full name"></div>
           <div class="tp-fld"><label>Email *</label><input id="tp-email" type="email" placeholder="candidate@example.com"></div>
+          <div class="tp-fld"><label>CC on Send (optional)</label><input id="tp-cc" type="email" placeholder="you@v3international.com" oninput="try{localStorage.setItem('v3_tp_cc',this.value.trim())}catch(e){}"></div>
           <div class="tp-fld"><label>Phone</label><input id="tp-phone" type="tel" placeholder="+966 5X XXX XXXX"></div>
           <div class="tp-fld"><label>Position Applied For</label><input id="tp-pos" type="text" placeholder="e.g. Senior HSE Engineer"></div>
           <div class="tp-fld"><label>Discipline *</label><select id="tp-disc">
@@ -1627,8 +1637,8 @@ body.light .modal{background:#fff}
     <div class="cgbox">
       <div style="font-size:2.2rem;margin-bottom:6px">📷</div>
       <div style="font-family:var(--mono);font-size:.64rem;letter-spacing:.26em;color:var(--lbl);text-transform:uppercase;margin-bottom:8px">Camera Required</div>
-      <h2>Activate Proctoring</h2>
-      <p>This examination requires your camera and microphone throughout the session. You cannot proceed without camera access.</p>
+      <h2 id="cg-title">Activate Proctoring</h2>
+      <p id="cg-desc">This examination requires your camera and microphone throughout the session. You cannot proceed without camera access.</p>
       <video id="cg-video" autoplay muted playsinline></video>
       <div class="cg-status" id="cg-status">Awaiting camera permission…</div>
       <button class="btn btn-gold btn-w100" id="cg-btn" onclick="activateCamGate()">Activate Camera &amp; Continue →</button>
@@ -2884,11 +2894,32 @@ async function fetchAllTokensRemote(){
    live bank stored in Drive, strips the answers, and returns only that.
    Grading works the same way in reverse: submitted answers are graded by
    Apps Script against the same draw, never by the candidate's own browser. */
+// Returns the whole response, not just the question set — as of Code.gs
+// v8.10 this also carries remainingSecs (server-computed, authoritative)
+// and any answers/skips already synced for this token, which is what lets
+// a reload resume the exam instead of restarting or locking it out.
 async function startExamRemote(tokenId){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
   const resp=await gsPost({action:'start_exam',token:tokenId});
-  if(resp?.ok&&Array.isArray(resp.questions)&&resp.questions.length)return resp.questions;
+  if(resp?.ok&&Array.isArray(resp.questions)&&resp.questions.length)return resp;
   return null;
+}
+// Persists S.answers/S.skipped to the backend so an in-progress exam
+// survives a reload. Debounced (not one request per keystroke-equivalent
+// click) but still effectively continuous from the candidate's point of
+// view — every answer change lands within a fraction of a second. If the
+// server reports the real deadline has already passed (a stale or
+// clock-manipulated client trying to keep going past time), submit
+// immediately rather than let the candidate keep answering into the void.
+let _syncAnsTimer=null;
+function syncAnswerRemote(){
+  if(!S.tokenId)return;
+  clearTimeout(_syncAnsTimer);
+  _syncAnsTimer=setTimeout(()=>{
+    gsPost({action:'sync_answer',token:S.tokenId,answers:S.answers,skipped:S.skipped})
+      .then(r=>{ if(r?.expired&&examInProgress)beginFinalSubmit(); })
+      .catch(()=>{});
+  },500);
 }
 async function gradeExamRemote(tokenId,answers){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
@@ -2955,7 +2986,17 @@ function lockToken(id){
   const s=getTokStore();
   let tok=s[id];
   if(!tok){const embedded=decodeTokenPayload(id);if(embedded)tok={id,...embedded,status:'active'};}
-  if(tok){tok.status='inprogress';tok.startedAt=new Date().toISOString();s[id]=tok;saveTokStore(s);pushTokenRemote(tok);}
+  if(tok){
+    // A reload resumes the same 'inprogress' session (see initTokenMode()/
+    // tryResumeInPersonSession()) rather than blocking it, and lockToken()
+    // gets called again on that path — startedAt must stay the ORIGINAL
+    // start time for accurate admin reporting, not get bumped forward on
+    // every reload. The exam clock itself is tracked independently and
+    // authoritatively server-side (examData.startTs in Code.gs), so this
+    // field is informational only, never used to compute remaining time.
+    if(tok.status!=='inprogress')tok.startedAt=new Date().toISOString();
+    tok.status='inprogress';s[id]=tok;saveTokStore(s);pushTokenRemote(tok);
+  }
 }
 function completeToken(id){
   const s=getTokStore();
@@ -2990,6 +3031,9 @@ function completeToken(id){
   }
   saveTokStore(s);
   if(tok) pushTokenRemote(tok);
+  // Session is genuinely over — an in-person resume marker pointing at it
+  // must not offer to resume a completed exam on the next reload.
+  try{ if(localStorage.getItem('v3_inperson_token')===id) localStorage.removeItem('v3_inperson_token'); }catch(e){}
 }
 
 // ── GLOBAL: tracks which screen to return to from s-report ──────────────
@@ -3049,6 +3093,7 @@ async function generateBulkTokens(){
   if(btn){btn.disabled=true;}
   const links=[];
   let failedSyncs=0;
+  const info=discLabelInfo(discKey);
   // Sequential, not parallel — every link is saved into one shared file on
   // Apps Script, so concurrent writes could clobber each other.
   for(let i=0;i<qty;i++){
@@ -3057,22 +3102,63 @@ async function generateBulkTokens(){
     const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs,
       issuedBy:sessionStorage.getItem('v3_hr_name')||'HR/Operator'});
     if(!synced)failedSyncs++;
-    links.push({id,url:`${base}?token=${id}`,name:cname});
+    // Kept alongside the id (not re-read from the form at Send-click time)
+    // so Send still works correctly even if the operator has since changed
+    // the form to prep a different candidate's link.
+    links.push({id,url:`${base}?token=${id}`,name:cname,email,position:pos,
+      discipline:info?.discipline||discKey,division:info?.division||'',
+      seniority:_tpSen,expiryHrs});
   }
   if(btn){btn.disabled=false;btn.textContent='Generate Links →';}
   renderBulkLinks(links);
   await refreshDashboard();
   if(failedSyncs)showToast(`⚠️ ${failedSyncs} link(s) didn't sync to Apps Script — they'll only work on this device until you're back online. Use ☁ Force Push or regenerate once connected.`,'warn');
 }
+// Keyed by token id so sendCandidateEmail() (called later, from an onclick)
+// can look up that link's own candidate details rather than re-reading
+// whatever the form currently holds.
+let _bulkLinkMeta={};
 function renderBulkLinks(links){
   const el=$('bulk-links');if(!el)return;
+  links.forEach(l=>{_bulkLinkMeta[l.id]=l;});
   el.innerHTML=links.map(l=>`
     <div class="bulk-link-item">
       <span class="bulk-link-name">${escH(l.name)}</span>
       <span class="bulk-link-txt">${l.url}</span>
       <button class="bulk-copy-btn" onclick="copyText('${l.url}')">Copy</button>
+      <button class="bulk-send-btn" id="send-btn-${l.id}" onclick="sendCandidateEmail('${l.id}')">✉ Send</button>
+      <span class="bulk-send-status" id="send-status-${l.id}"></span>
     </div>`).join('');
   el.classList.add('on');
+}
+// Emails the candidate their unique link + standard instructions via
+// Code.gs (MailApp, sent from the connected Google account) — an
+// alternative to copying the link and sending it manually. CC (optional,
+// from #tp-cc) is included on the same email so whoever's cc'd sees proof
+// it went out; if the send fails outright, handleSendCandidateEmail on the
+// backend still tries to notify that same cc address separately, since a
+// failed send obviously never reached anyone via the normal copy.
+async function sendCandidateEmail(id){
+  const meta=_bulkLinkMeta[id];if(!meta)return;
+  const btn=$('send-btn-'+id),status=$('send-status-'+id);
+  const cc=$('tp-cc')?.value.trim()||'';
+  if(btn){btn.disabled=true;btn.textContent='Sending…';}
+  if(status){status.textContent='';status.className='bulk-send-status';}
+  const resp=await gsPost({
+    action:'send_candidate_email',
+    to:meta.email,cc,name:meta.name,position:meta.position,
+    discipline:meta.discipline,division:meta.division,seniority:meta.seniority,
+    link:meta.url,expiryHrs:meta.expiryHrs,
+    issuedBy:sessionStorage.getItem('v3_hr_name')||'HR/Operator'
+  });
+  if(btn){btn.disabled=false;btn.textContent='✉ Send';}
+  if(resp?.ok){
+    if(status){status.textContent='✓ Sent';status.classList.add('ok');}
+    showToast('Email sent to '+meta.email,'ok');
+  }else{
+    if(status){status.textContent='✗ Failed';status.classList.add('fail');}
+    showToast('Could not send email'+(cc?' (cc was notified)':'')+' — copy the link instead.','warn');
+  }
 }
 function copyText(text){navigator.clipboard.writeText(text).then(()=>showToast('Copied!','ok'));}
 function copyAllLinks(){
@@ -3252,13 +3338,17 @@ async function launchSession(){
     if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
     return showErr('setup-err','Could not connect to the exam backend — check the connection and try again.');
   }
-  const drawn=await startExamRemote(tokenId);
+  const started=await startExamRemote(tokenId);
   if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
-  if(!drawn||drawn.length<1)return showErr('setup-err','Could not load exam questions — check the connection and try again.');
-  S.qs=drawn;S.tokenId=tokenId;
+  if(!started)return showErr('setup-err','Could not load exam questions — check the connection and try again.');
+  S.qs=started.questions;S.tokenId=tokenId;S.inPersonMode=true;
   S.name=name;S.email=email;S.phone=phone;S.position=pos;
   S.discKey=_discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=_sen;
-  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;_submitStarted=false;
+  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;S._resumeSecsLeft=null;_submitStarted=false;
+  // Remembers which in-person session is live on THIS device, so a reload
+  // (no ?token= in the URL for this mode, unlike the online candidate-link
+  // flow) can still find its way back to it — see tryResumeInPersonSession().
+  try{localStorage.setItem('v3_inperson_token',tokenId);}catch(e){}
   populateIntro();goto('s-intro');
 }
 function populateIntro(){
@@ -3280,13 +3370,30 @@ function populateIntro(){
    EXAM ENGINE
 ═══════════════════════════════════════════════════════ */
 let examInProgress=false;
-function startExam(){
+// resumeSecsLeft is only passed when re-entering an exam already in
+// progress after a reload (see activateCamGate()/initTokenMode()) — the
+// server-computed remaining time (never a fresh full clock, and never
+// anything the client itself claims — see handleStartExam in Code.gs) and
+// the question index to land on both come from that resume, not from
+// scratch. Called with no arguments, this is exactly the original
+// fresh-start behaviour.
+function startExam(resumeSecsLeft){
   examInProgress=true;
-  S.secsLeft=CFG.EXAM_SECS;S.startTs=new Date().toISOString();
+  const isResume=resumeSecsLeft!=null;
+  S.secsLeft=isResume?resumeSecsLeft:CFG.EXAM_SECS;
+  S.startTs=S.startTs||new Date().toISOString();
   $('cam-pip')?.classList.add('on');
   const v=$('pip-video');if(v&&S.camStream)v.srcObject=S.camStream;
   if($('exam-disc'))$('exam-disc').textContent=S.discipline+' — '+S.division;
   buildTracker();updateTimer();
+  if(isResume&&S.secsLeft<=0){
+    // The real deadline had already passed before the candidate even got
+    // back in (e.g. reloaded long after time ran out without submitting)
+    // — submit immediately rather than flashing the exam screen first.
+    goto('s-exam');
+    setTimeout(()=>beginFinalSubmit(),50);
+    return;
+  }
   S.timerRef=setInterval(()=>{
     S.secsLeft--;updateTimer();
     if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');beginFinalSubmit();},3200);}
@@ -3298,7 +3405,11 @@ function startExam(){
     const req=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||el.msRequestFullscreen;
     if(req) req.call(el).catch(()=>{});
   }catch(e){}
-  goto('s-exam');renderQ(0);
+  goto('s-exam');renderQ(isResume?firstUnansweredIdx():0);
+}
+function firstUnansweredIdx(){
+  for(let i=0;i<S.qs.length;i++) if(S.answers[i]===undefined) return i;
+  return Math.max(0,S.qs.length-1);
 }
 function updateTimer(){
   const el=$('exam-timer');if(!el)return;
@@ -3453,6 +3564,7 @@ async function uploadVideoToDrive(blob){
       action:'upload_video',
       name:S.name,email:S.email,
       submissionTs:S.submissionTs,
+      sheetRow:S.sheetRow||null,
       discipline:S.discipline,division:S.division,seniority:S.seniority,
       video_b64:b64
     });
@@ -3510,9 +3622,9 @@ function renderQ(idx){
   if($('nav-submit')){$('nav-submit').style.display=_isLast?'':'none';}
   updateTracker();updateFooter();window.scrollTo(0,0);
 }
-function pickAns(qi,oi){S.answers[qi]=oi;delete S.skipped[qi];renderQ(S.curQ);}
+function pickAns(qi,oi){S.answers[qi]=oi;delete S.skipped[qi];renderQ(S.curQ);syncAnswerRemote();}
 function navQ(dir){const n=S.curQ+dir;if(n>=0&&n<S.qs.length)renderQ(n);}
-function skipQ(){S.skipped[S.curQ]=true;if(S.curQ<S.qs.length-1)renderQ(S.curQ+1);}
+function skipQ(){S.skipped[S.curQ]=true;if(S.curQ<S.qs.length-1)renderQ(S.curQ+1);syncAnswerRemote();}
 function updateFooter(){
   const ans=Object.keys(S.answers).length,tot=S.qs.length,pct=(ans/tot)*100;
   if($('foot-info'))$('foot-info').textContent=ans+' / '+tot+' answered';
@@ -3739,6 +3851,13 @@ async function submitToSheets(){
   });
 
   if (data?.ok) console.log('V3: exam result recorded in Sheet ✓');
+  // The backend now hands back the exact row it just wrote. Passing this
+  // along with the video/PDF uploads lets the backend write directly to
+  // that row instead of re-searching the whole sheet by timestamp/email —
+  // the search (plus its up-to-10x3s retry budget) was the main source of
+  // upload lag, and it only gets slower as the sheet grows and as more
+  // candidates submit around the same time.
+  if (typeof data?.row === 'number') S.sheetRow = data.row;
   return data;
 }
 
@@ -3752,7 +3871,7 @@ async function generateAndUploadPdf(){
     }
 
     // Self-contained CSS — matches Admin Panel styling exactly
-    const REPORT_CSS = "/* V3 ME Report Card — Print-ready standalone CSS\n   Matches Admin Panel preview exactly.\n   @page: A4 portrait, 0.4in margins */\n@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;700;800&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');\n\n/* Force background colors to print */\n*{\n  -webkit-print-color-adjust:exact!important;\n  print-color-adjust:exact!important;\n  color-adjust:exact!important;\n  box-sizing:border-box;\n  margin:0;padding:0;\n}\n\n@page{size:A4 portrait;margin:10mm}\n@media print{\n  body{margin:0}\n  .rpt-pg{width:100%;max-width:100%;box-sizing:border-box;padding:0 15px;page-break-after:always!important;break-after:page!important;overflow:hidden}\n  .rpt-pg:last-child{page-break-after:avoid!important;break-after:avoid!important;overflow:hidden}\n}\n\n/* CSS vars used by buildReport inline styles */\n:root{\n  --ok:#1a6b3c;--fail:#8B2020;--warn:#b05000;\n  --gold:#C9A84C;--gold-d:#a8893a;\n  --muted:#888888;\n  --navy:#0A1628;\n  --serif:'EB Garamond',Georgia,serif;\n  --mono:'DM Mono','Courier New',monospace;\n}\n\nhtml,body{background:#ffffff;font-family:'Outfit',Arial,sans-serif;color:#1a1a1a;font-size:14px}\n\n/* ── PAGE ── */\n.rpt-pg{background:#ffffff;width:100%;position:relative;margin-bottom:0;overflow:visible}\n\n/* ── HEADER ── */\n.pg-hdr{background:#0A1628!important;border-radius:0;margin-bottom:16px}\n.pg-hdr-top{\n  padding:14px 20px 10px;\n  display:flex;align-items:center;justify-content:space-between;\n}\nimg.pg-hdr-logo{\n  height:36px!important;width:auto!important;display:block;flex-shrink:0;\n}\n.pg-hdr-title h1{\n  font-family:'Outfit',sans-serif;font-size:12px;color:#E8E2D6!important;\n  font-weight:700;text-align:right;line-height:1.4;\n}\n.pg-hdr-title p{\n  font-size:8.5px;color:rgba(201,168,76,.7)!important;text-align:right;margin-top:2px;\n  letter-spacing:.06em;text-transform:uppercase;\n}\n.pg-hdr-stripe{height:4px;background:linear-gradient(90deg,#C9A84C,#e8d08a,#C9A84C)!important}\n.pg-hdr-band{\n  background:rgba(201,168,76,.08)!important;\n  padding:5px 20px;display:flex;justify-content:space-between;align-items:center;\n}\n.pg-hdr-band-tag{\n  font-size:7px;color:rgba(201,168,76,.85)!important;\n  text-transform:uppercase;letter-spacing:.18em;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n.pg-hdr-band-ref{font-size:7px;color:rgba(255,255,255,.45)!important;letter-spacing:.06em}\n\n/* ── FOOTER ── */\n.pg-ftr{\n  background:#0A1628!important;\n  padding:6px 20px;display:flex;justify-content:space-between;align-items:center;\n  margin-top:24px;\n}\n.pg-ftr span{font-size:7px;color:rgba(255,255,255,.4)!important;font-family:'DM Mono',monospace}\n.pg-ftr .pgn{color:rgba(255,255,255,.7)!important;font-weight:700;font-size:7px}\n.gd{font-style:italic;color:rgba(201,168,76,.7)!important}\n\n/* ── PAGE 1 HERO ── */\n.p1-hero{\n  padding:16px 20px 10px;\n  display:grid;grid-template-columns:1fr auto;gap:14px;align-items:start;\n}\n.p1-eyebrow{\n  font-size:8px;color:#C9A84C!important;font-weight:700;\n  text-transform:uppercase;letter-spacing:.16em;margin-bottom:6px;\n  font-family:'DM Mono',monospace;\n}\n.p1-title h2{\n  font-family:'EB Garamond',Georgia,serif;\n  font-size:28px;color:#0A1628!important;font-weight:800;margin-bottom:4px;line-height:1.1;\n}\n.p1-subtitle{font-size:10.5px;color:#555!important;margin-top:4px;letter-spacing:.04em}\n\n/* ── VERDICT BADGE ── */\n.verdict-badge{\n  display:flex;flex-direction:column;align-items:center;\n  justify-content:center;width:82px;height:82px;border-radius:50%;\n  font-weight:800;flex-shrink:0;\n}\n.verdict-badge.pass{background:linear-gradient(135deg,#0d4a28,#1a6b3c)!important}\n.verdict-badge.fail{background:linear-gradient(135deg,#5a0d0d,#8B2020)!important}\n.vb-pct{font-size:21px;color:#ffffff!important;line-height:1;font-weight:800}\n.vb-lbl{font-size:6.5px;color:rgba(255,255,255,.65)!important;text-transform:uppercase;margin-top:2px;letter-spacing:.06em}\n.vb-verdict{font-size:6.5px;color:rgba(255,255,255,.9)!important;font-weight:800;text-transform:uppercase;margin-top:2px}\n\n/* ── DIVIDERS & SECTIONS ── */\n.r-divider{height:1px;background:#e0d8c8!important;margin:0 0 0 0}\n.r-sec{padding:16px 0}\n.r-sec-lbl{\n  font-size:7.5px;letter-spacing:.2em;text-transform:uppercase;\n  color:#C9A84C!important;margin-bottom:8px;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n\n/* ── INFO CARD GRID ── */\n.ig4{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}\n.ig2{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}\n.ic{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:8px 10px;\n}\n.ic.acc{background:#0A1628!important}\n.ic.acc .ck{color:rgba(201,168,76,.65)!important}\n.ic.acc .cv{color:#E8E2D6!important}\n.ic.pass-c{background:#eaf5ef!important}\n.ic.pass-c .cv{color:#1a6b3c!important}\n.ic.fail-c{background:#fdeaea!important}\n.ic.fail-c .cv{color:#8B2020!important}\n.ck{\n  font-size:7.5px;letter-spacing:.1em;text-transform:uppercase;\n  color:#888!important;margin-bottom:3px;font-weight:600;\n  font-family:'DM Mono',monospace;\n}\n.cv{font-weight:700;font-size:11.5px;color:#0A1628!important;line-height:1.3}\n\n/* ── SCORE BARS ── */\n.sv-bars{display:flex;flex-direction:column;gap:9px;padding:16px 0}\n.sv-bar-row{display:flex;align-items:center;gap:8px}\n.sv-bar-lbl{\n  font-size:8.5px;color:#555!important;width:74px;text-align:right;\n  font-weight:700;font-family:'DM Mono',monospace;\n}\n.sv-bar-track{flex:1;height:12px;background:#f0ebe1!important;border-radius:6px;overflow:hidden}\n.sv-bar-fill{height:100%;border-radius:6px}\n.sv-bar-fill.correct{background:linear-gradient(90deg,#1a6b3c,#2d9c5a)!important}\n.sv-bar-fill.wrong{background:linear-gradient(90deg,#8B2020,#c43838)!important}\n.sv-bar-fill.skip{background:linear-gradient(90deg,#b05000,#d4722a)!important}\n.sv-bar-pct{font-size:8.5px;color:#555!important;width:70px;flex-shrink:0;text-align:right;font-family:'DM Mono',monospace;white-space:nowrap;font-weight:700}\n\n/* ── PROCTOR BANNER ── */\n.proctor-banner{\n  border-radius:6px;padding:10px 14px;\n  display:flex;align-items:center;gap:10px;border:1px solid;\n  margin:8px 0;\n}\n.proctor-banner.clean{background:#eaf5ef!important;border-color:rgba(26,107,60,.25)!important}\n.proctor-banner.warn{background:#fff3e0!important;border-color:rgba(176,80,0,.25)!important}\n.proctor-banner.flagged{background:#fdeaea!important;border-color:rgba(139,32,32,.25)!important}\n.pb-icon{font-size:18px;flex-shrink:0}\n.pb-body{flex:1}\n.pb-count{font-size:22px;font-weight:800;color:#0A1628!important}\n.pb-title{font-size:9px;font-weight:800;margin-bottom:2px}\n.proctor-banner.clean .pb-title{color:#1a6b3c!important}\n.proctor-banner.warn .pb-title{color:#b05000!important}\n.proctor-banner.flagged .pb-title{color:#8B2020!important}\n.pb-desc{font-size:9.5px;color:#444!important;line-height:1.5}\n.vid-link{color:#1155CC!important;font-size:8px;font-weight:700;cursor:pointer;text-decoration:none}\n\n/* ── SIGNATURE ── */\n.sig-block{padding:26px 0 8px}\n.sig-row{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:8px}\n.sig-item{padding-top:30px;border-top:1px solid #ccc!important}\n.sig-item .sl{\n  font-size:7px;text-transform:uppercase;color:#aaa!important;\n  font-family:'DM Mono',monospace;letter-spacing:.1em;\n}\n.sd{font-size:8px;color:#444!important;margin-top:2px}\n\n/* ── Q&A PAGES ── */\n/* Remove the extra watermark icon on pages 2&3 */\n.qa-pg-hdr{\n  display:flex;align-items:flex-start;gap:10px;\n  padding:4px 0 14px 0;\n  border-bottom:2px solid #e0d8c8;\n  margin-bottom:12px;\n}\n/* Hide the floating icon that was causing the watermark — keep the text */\n.qa-pg-icon{display:none!important}\n\n.qa-pg-title{\n  font-family:'EB Garamond',serif;font-size:15px;font-weight:700;\n  color:#0A1628!important;line-height:1.2;\n}\n.qa-pg-sub{font-size:9px;color:#777!important;margin-top:3px}\n\n/* ── Q&A TABLE — fixed column widths per mandate ── */\n.qa-tbl{width:100%;border-collapse:collapse;table-layout:fixed;word-wrap:break-word}\n.qa-tbl thead tr{background:#0A1628!important}\n.qa-tbl th{\n  padding:6px 8px;text-align:left;\n  color:#E8E2D6!important;font-size:8.5px;\n  text-transform:uppercase;letter-spacing:.08em;font-weight:600;\n  overflow:hidden;\n}\n/* Mandate column widths: # 5% | SEC 5% | Q 40% | CA 20% | Correct 20% | Result 10% */\n.qa-tbl th:nth-child(1),.qa-tbl td:nth-child(1){width:5%}\n.qa-tbl th:nth-child(2),.qa-tbl td:nth-child(2){width:5%}\n.qa-tbl th:nth-child(3),.qa-tbl td:nth-child(3){width:40%}\n.qa-tbl th:nth-child(4),.qa-tbl td:nth-child(4){width:20%}\n.qa-tbl th:nth-child(5),.qa-tbl td:nth-child(5){width:20%}\n.qa-tbl th:nth-child(6),.qa-tbl td:nth-child(6){width:10%}\n\n.qa-tbl td{\n  padding:7px 8px;border-bottom:1px solid #ece7dc!important;\n  font-size:9.5px;color:#111!important;vertical-align:top;\n  word-wrap:break-word;overflow-wrap:break-word;\n}\n.qa-tbl tr:nth-child(even) td{background:#faf7f0!important}\n.q-n{font-weight:800;font-size:8px;color:#0A1628!important;font-family:'DM Mono',monospace}\n\n/* ── Q&A LOCK GATE ── */\n.qa-locked{border:1.5px dashed #d8cdb0!important;border-radius:8px;padding:22px 20px;text-align:center;background:#faf7f0!important}\n.qa-lock-icon{font-size:22px;margin-bottom:6px}\n.qa-lock-title{font-family:'Outfit',sans-serif;font-weight:800;font-size:11px;color:#0A1628!important;margin-bottom:4px}\n.qa-lock-desc{font-size:8.5px;color:#777!important;margin-bottom:12px;max-width:420px;margin-left:auto;margin-right:auto;line-height:1.5}\n.qa-pass-row{display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap}\n.qa-pass-input{font-family:'DM Mono',monospace;font-size:9px;padding:6px 10px;border:1.5px solid #d8cdb0;border-radius:5px;width:160px}\n.qa-unlock-btn{font-family:'Outfit',sans-serif;font-weight:700;font-size:8.5px;padding:7px 16px;border-radius:5px;border:none;background:#0A1628!important;color:#E8E2D6!important;cursor:pointer}\n.qa-unlock-btn:disabled{opacity:.6;cursor:default}\n.qa-pass-err{display:none;color:#8B2020!important;font-size:8px;margin-top:8px}\n/* Deliberately no @media print override here: printing (Ctrl+P → Save as\n   PDF) is the normal way this report becomes a PDF, so whichever state\n   is on screen at that moment — locked or unlocked — is what must print.\n   Overriding it to always reveal the Q&A on print would let anyone skip\n   the password entirely just by printing without unlocking first. */\n\n/* SEC pill */\n.q-sec-pill{\n  display:inline-flex;align-items:center;justify-content:center;\n  width:22px;height:22px;border-radius:50%;\n  background:#0A1628!important;color:#E8E2D6!important;\n  font-size:7px;font-weight:700;font-family:'DM Mono',monospace;\n}\n\n.q-given-ok{color:#1a6b3c!important;font-weight:700;font-size:8px}\n.q-given-fail{color:#8B2020!important;font-weight:700;font-size:8px}\n.q-given-na{color:#aaa!important;font-style:italic;font-size:8px}\n\n.r-ok{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#eaf5ef!important;color:#1a6b3c!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(26,107,60,.2)!important;\n}\n.r-fail{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#fdeaea!important;color:#8B2020!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(139,32,32,.2)!important;\n}\n.skip{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:rgba(176,80,0,.08)!important;color:#b05000!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;\n}\n\n/* ── FORENSIC LOG ── */\n.flog-sec{padding:12px 0 0 0}\n.flog2{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:10px;font-size:9px;\n  font-family:'DM Mono','Courier New',monospace;\n  line-height:1.6;\n}\n.flog2-row{display:flex;gap:10px;padding:2px 0}\n.flog2-ts{color:#a8893a!important;font-weight:700;flex-shrink:0;min-width:56px}\n.flog2-ev{color:#333!important}\n.flog2-ev.ai-w{color:#b05000!important}\n.flog2-ev.ai-c{color:#8B2020!important}";
+    const REPORT_CSS = "/* V3 ME Report Card — Print-ready standalone CSS\n   Matches Admin Panel preview exactly.\n   @page: A4 portrait, 0.4in margins */\n@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;700;800&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');\n\n/* Force background colors to print */\n*{\n  -webkit-print-color-adjust:exact!important;\n  print-color-adjust:exact!important;\n  color-adjust:exact!important;\n  box-sizing:border-box;\n  margin:0;padding:0;\n}\n\n@page{size:A4 portrait;margin:10mm}\n@media print{\n  body{margin:0}\n  .rpt-pg{width:100%;max-width:100%;box-sizing:border-box;padding:0 15px;page-break-after:always!important;break-after:page!important;overflow:hidden}\n  .rpt-pg:last-child{page-break-after:avoid!important;break-after:avoid!important;overflow:hidden}\n}\n\n/* CSS vars used by buildReport inline styles */\n:root{\n  --ok:#1a6b3c;--fail:#8B2020;--warn:#b05000;\n  --gold:#C9A84C;--gold-d:#a8893a;\n  --muted:#888888;\n  --navy:#0A1628;\n  --serif:'EB Garamond',Georgia,serif;\n  --mono:'DM Mono','Courier New',monospace;\n}\n\nhtml,body{background:#ffffff;font-family:'Outfit',Arial,sans-serif;color:#1a1a1a;font-size:14px}\n\n/* ── PAGE ── */\n.rpt-pg{background:#ffffff;width:100%;position:relative;margin-bottom:0;overflow:visible}\n\n/* ── HEADER ── */\n.pg-hdr{background:#0A1628!important;border-radius:0;margin-bottom:16px}\n.pg-hdr-top{\n  padding:14px 20px 10px;\n  display:flex;align-items:center;justify-content:space-between;\n}\nimg.pg-hdr-logo{\n  height:36px!important;width:auto!important;display:block;flex-shrink:0;\n}\n.pg-hdr-title h1{\n  font-family:'Outfit',sans-serif;font-size:12px;color:#E8E2D6!important;\n  font-weight:700;text-align:right;line-height:1.4;\n}\n.pg-hdr-title p{\n  font-size:8.5px;color:rgba(201,168,76,.7)!important;text-align:right;margin-top:2px;\n  letter-spacing:.06em;text-transform:uppercase;\n}\n.pg-hdr-stripe{height:4px;background:linear-gradient(90deg,#C9A84C,#e8d08a,#C9A84C)!important}\n.pg-hdr-band{\n  background:rgba(201,168,76,.08)!important;\n  padding:5px 20px;display:flex;justify-content:space-between;align-items:center;\n}\n.pg-hdr-band-tag{\n  font-size:7px;color:rgba(201,168,76,.85)!important;\n  text-transform:uppercase;letter-spacing:.18em;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n.pg-hdr-band-ref{font-size:7px;color:rgba(255,255,255,.45)!important;letter-spacing:.06em}\n\n/* ── FOOTER ── */\n.pg-ftr{\n  background:#0A1628!important;\n  padding:6px 20px;display:flex;justify-content:space-between;align-items:center;\n  margin-top:24px;\n}\n.pg-ftr span{font-size:7px;color:rgba(255,255,255,.4)!important;font-family:'DM Mono',monospace}\n.pg-ftr .pgn{color:rgba(255,255,255,.7)!important;font-weight:700;font-size:7px}\n.gd{font-style:italic;color:rgba(201,168,76,.7)!important}\n\n/* ── PAGE 1 HERO ── */\n.p1-hero{\n  padding:16px 20px 10px;\n  display:grid;grid-template-columns:1fr auto;gap:14px;align-items:start;\n}\n.p1-eyebrow{\n  font-size:8px;color:#C9A84C!important;font-weight:700;\n  text-transform:uppercase;letter-spacing:.16em;margin-bottom:6px;\n  font-family:'DM Mono',monospace;\n}\n.p1-title h2{\n  font-family:'EB Garamond',Georgia,serif;\n  font-size:28px;color:#0A1628!important;font-weight:800;margin-bottom:4px;line-height:1.1;\n}\n.p1-subtitle{font-size:10.5px;color:#555!important;margin-top:4px;letter-spacing:.04em}\n\n/* ── VERDICT BADGE ── */\n.verdict-badge{\n  display:flex;flex-direction:column;align-items:center;\n  justify-content:center;width:82px;height:82px;border-radius:50%;\n  font-weight:800;flex-shrink:0;\n}\n.verdict-badge.pass{background:linear-gradient(135deg,#0d4a28,#1a6b3c)!important}\n.verdict-badge.fail{background:linear-gradient(135deg,#5a0d0d,#8B2020)!important}\n.vb-pct{font-size:21px;color:#ffffff!important;line-height:1;font-weight:800}\n.vb-lbl{font-size:6.5px;color:rgba(255,255,255,.65)!important;text-transform:uppercase;margin-top:2px;letter-spacing:.06em}\n.vb-verdict{font-size:6.5px;color:rgba(255,255,255,.9)!important;font-weight:800;text-transform:uppercase;margin-top:2px}\n\n/* ── DIVIDERS & SECTIONS ── */\n.r-divider{height:1px;background:#e0d8c8!important;margin:0 0 0 0}\n.r-sec{padding:16px 0}\n.r-sec-lbl{\n  font-size:7.5px;letter-spacing:.2em;text-transform:uppercase;\n  color:#C9A84C!important;margin-bottom:8px;font-weight:700;\n  font-family:'DM Mono',monospace;\n}\n\n/* ── INFO CARD GRID ── */\n.ig4{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}\n.ig2{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}\n.ic{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:8px 10px;\n}\n.ic.acc{background:#0A1628!important}\n.ic.acc .ck{color:rgba(201,168,76,.65)!important}\n.ic.acc .cv{color:#E8E2D6!important}\n.ic.pass-c{background:#eaf5ef!important}\n.ic.pass-c .cv{color:#1a6b3c!important}\n.ic.fail-c{background:#fdeaea!important}\n.ic.fail-c .cv{color:#8B2020!important}\n.ck{\n  font-size:7.5px;letter-spacing:.1em;text-transform:uppercase;\n  color:#888!important;margin-bottom:3px;font-weight:600;\n  font-family:'DM Mono',monospace;\n}\n.cv{font-weight:700;font-size:11.5px;color:#0A1628!important;line-height:1.3}\n\n/* ── SCORE BARS ── */\n.sv-bars{display:flex;flex-direction:column;gap:9px;padding:16px 0}\n.sv-bar-row{display:flex;align-items:center;gap:8px}\n.sv-bar-lbl{\n  font-size:8.5px;color:#555!important;width:74px;text-align:right;\n  font-weight:700;font-family:'DM Mono',monospace;\n}\n.sv-bar-track{flex:1;height:12px;background:#f0ebe1!important;border-radius:6px;overflow:hidden}\n.sv-bar-fill{height:100%;border-radius:6px}\n.sv-bar-fill.correct{background:linear-gradient(90deg,#1a6b3c,#2d9c5a)!important}\n.sv-bar-fill.wrong{background:linear-gradient(90deg,#8B2020,#c43838)!important}\n.sv-bar-fill.skip{background:linear-gradient(90deg,#b05000,#d4722a)!important}\n.sv-bar-pct{font-size:8.5px;color:#555!important;width:70px;flex-shrink:0;text-align:right;font-family:'DM Mono',monospace;white-space:nowrap;font-weight:700}\n\n/* ── ASSESSMENT CONDITIONS / INTEGRITY NOTE ── */\n.integrity-note{background:#f8f4ee!important;border:1px solid #e8e0cc!important;border-radius:6px;padding:10px 14px;font-size:9.5px;color:#444!important;line-height:1.6}\n.vid-link{color:#1155CC!important;font-size:8px;font-weight:700;cursor:pointer;text-decoration:none}\n\n/* ── SIGNATURE ── */\n.sig-block{padding:26px 0 8px}\n.sig-row{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:8px}\n.sig-item{padding-top:30px;border-top:1px solid #ccc!important}\n.sig-item .sl{\n  font-size:7px;text-transform:uppercase;color:#aaa!important;\n  font-family:'DM Mono',monospace;letter-spacing:.1em;\n}\n.sd{font-size:8px;color:#444!important;margin-top:2px}\n\n/* ── Q&A PAGES ── */\n/* Remove the extra watermark icon on pages 2&3 */\n.qa-pg-hdr{\n  display:flex;align-items:flex-start;gap:10px;\n  padding:4px 0 14px 0;\n  border-bottom:2px solid #e0d8c8;\n  margin-bottom:12px;\n}\n/* Hide the floating icon that was causing the watermark — keep the text */\n.qa-pg-icon{display:none!important}\n\n.qa-pg-title{\n  font-family:'EB Garamond',serif;font-size:15px;font-weight:700;\n  color:#0A1628!important;line-height:1.2;\n}\n.qa-pg-sub{font-size:9px;color:#777!important;margin-top:3px}\n\n/* ── Q&A TABLE — fixed column widths per mandate ── */\n.qa-tbl{width:100%;border-collapse:collapse;table-layout:fixed;word-wrap:break-word}\n.qa-tbl thead tr{background:#0A1628!important}\n.qa-tbl th{\n  padding:6px 8px;text-align:left;\n  color:#E8E2D6!important;font-size:8.5px;\n  text-transform:uppercase;letter-spacing:.08em;font-weight:600;\n  overflow:hidden;\n}\n/* Mandate column widths: # 5% | SEC 5% | Q 40% | CA 20% | Correct 20% | Result 10% */\n.qa-tbl th:nth-child(1),.qa-tbl td:nth-child(1){width:5%}\n.qa-tbl th:nth-child(2),.qa-tbl td:nth-child(2){width:5%}\n.qa-tbl th:nth-child(3),.qa-tbl td:nth-child(3){width:40%}\n.qa-tbl th:nth-child(4),.qa-tbl td:nth-child(4){width:20%}\n.qa-tbl th:nth-child(5),.qa-tbl td:nth-child(5){width:20%}\n.qa-tbl th:nth-child(6),.qa-tbl td:nth-child(6){width:10%}\n\n.qa-tbl td{\n  padding:7px 8px;border-bottom:1px solid #ece7dc!important;\n  font-size:9.5px;color:#111!important;vertical-align:top;\n  word-wrap:break-word;overflow-wrap:break-word;\n}\n.qa-tbl tr:nth-child(even) td{background:#faf7f0!important}\n.q-n{font-weight:800;font-size:8px;color:#0A1628!important;font-family:'DM Mono',monospace}\n\n/* ── Q&A LOCK GATE ── */\n.qa-locked{border:1.5px dashed #d8cdb0!important;border-radius:8px;padding:22px 20px;text-align:center;background:#faf7f0!important}\n.qa-lock-icon{font-size:22px;margin-bottom:6px}\n.qa-lock-title{font-family:'Outfit',sans-serif;font-weight:800;font-size:11px;color:#0A1628!important;margin-bottom:4px}\n.qa-lock-desc{font-size:8.5px;color:#777!important;margin-bottom:12px;max-width:420px;margin-left:auto;margin-right:auto;line-height:1.5}\n.qa-pass-row{display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap}\n.qa-pass-input{font-family:'DM Mono',monospace;font-size:9px;padding:6px 10px;border:1.5px solid #d8cdb0;border-radius:5px;width:160px}\n.qa-unlock-btn{font-family:'Outfit',sans-serif;font-weight:700;font-size:8.5px;padding:7px 16px;border-radius:5px;border:none;background:#0A1628!important;color:#E8E2D6!important;cursor:pointer}\n.qa-unlock-btn:disabled{opacity:.6;cursor:default}\n.qa-pass-err{display:none;color:#8B2020!important;font-size:8px;margin-top:8px}\n/* Deliberately no @media print override here: printing (Ctrl+P → Save as\n   PDF) is the normal way this report becomes a PDF, so whichever state\n   is on screen at that moment — locked or unlocked — is what must print.\n   Overriding it to always reveal the Q&A on print would let anyone skip\n   the password entirely just by printing without unlocking first. */\n\n/* SEC pill */\n.q-sec-pill{\n  display:inline-flex;align-items:center;justify-content:center;\n  width:22px;height:22px;border-radius:50%;\n  background:#0A1628!important;color:#E8E2D6!important;\n  font-size:7px;font-weight:700;font-family:'DM Mono',monospace;\n}\n\n.q-given-ok{color:#1a6b3c!important;font-weight:700;font-size:8px}\n.q-given-fail{color:#8B2020!important;font-weight:700;font-size:8px}\n.q-given-na{color:#aaa!important;font-style:italic;font-size:8px}\n\n.r-ok{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#eaf5ef!important;color:#1a6b3c!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(26,107,60,.2)!important;\n}\n.r-fail{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:#fdeaea!important;color:#8B2020!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;border:1px solid rgba(139,32,32,.2)!important;\n}\n.skip{\n  display:inline-flex;align-items:center;justify-content:center;\n  background:rgba(176,80,0,.08)!important;color:#b05000!important;\n  padding:3px 6px;border-radius:4px;font-size:7px;font-weight:800;\n  white-space:nowrap;\n}\n\n/* ── FORENSIC LOG ── */\n.flog-sec{padding:12px 0 0 0}\n.flog2{\n  background:#f8f4ee!important;border:1px solid #e8e0cc!important;\n  border-radius:5px;padding:10px;font-size:9px;\n  font-family:'DM Mono','Courier New',monospace;\n  line-height:1.6;\n}\n.flog2-row{display:flex;gap:10px;padding:2px 0}\n.flog2-ts{color:#a8893a!important;font-weight:700;flex-shrink:0;min-width:56px}\n.flog2-ev{color:#333!important}\n.flog2-ev.ai-w{color:#b05000!important}\n.flog2-ev.ai-c{color:#8B2020!important}";
 
     // Report body from DOM — logos already have base64 src from injectLogos()
     const bodyHtml = rptEl.innerHTML;
@@ -3805,6 +3924,7 @@ async function generateAndUploadPdf(){
       action:'upload_pdf',
       name:S.name, email:S.email,
       submissionTs:S.submissionTs,
+      sheetRow:S.sheetRow||null,
       discipline:S.discipline, division:S.division, seniority:S.seniority,
       html:reportHtml,
     });
@@ -3834,13 +3954,14 @@ function buildReport(){
   const correctPct=Math.round((S.score/totalQs)*100);
   const wrongPct=Math.round((wrong/totalQs)*100);
   const skipPct=Math.round((skipped/totalQs)*100);
-  const proctorCls=S.autoSubmittedForViolations?'flagged':S.blurCount===0?'clean':S.blurCount<=4?'warn':'flagged';
-  const proctorIcon=S.autoSubmittedForViolations?'⛔':S.blurCount===0?'✅':S.blurCount<=4?'⚠️':'🚨';
-  const proctorTitle=S.autoSubmittedForViolations?'Exam Auto-Terminated — Maximum Violations Reached':S.blurCount===0?'No Violations Recorded':S.blurCount<=4?'Minor Violations Noted':'Elevated Violations — Review Required';
-  const proctorDesc=S.autoSubmittedForViolations
-    ? `Submission was forced automatically after ${S.blurCount} proctoring violation(s) (tab switch, lost focus, or exiting fullscreen). Treat this result with caution — review the forensic log on Page 3.`
-    : S.blurCount===0?'Candidate maintained full focus throughout the examination.'
-    :'Focus losses, blocked keys, or AI flags detected. See forensic log on Page 3.';
+  // A short, human-readable reference code derived from the real
+  // submission timestamp — not fabricated data, just a traceable ID for
+  // this specific attempt, useful once records run into the hundreds.
+  const refNo='V3-'+String(S.submissionTs||S.endTs||'').replace(/[^0-9]/g,'').slice(-10);
+  // S.tokenId alone can't distinguish these — both online and in-person
+  // exams now run through the same token-backed server flow (see
+  // launchSession()/initTokenMode()), so S.inPersonMode is the real flag.
+  const assessMode=S.inPersonMode?'In-Person (Proctored)':'Online (Remote Link)';
 
   const vidUrl=S.videoUploadUrl||S.videoUrl||'';
   // A plain link, not onclick="openVideoModal(...)" — this markup is only
@@ -3927,24 +4048,25 @@ function buildReport(){
         <div class="ic"><div class="ck">Recommendation</div><div class="cv" style="color:${S.passed?'var(--ok)':'var(--fail)'}">${g.rec}</div></div>
         <div class="ic"><div class="ck">Time Taken</div><div class="cv">${timeTaken}</div></div>
         <div class="ic"><div class="ck">Pass Mark</div><div class="cv">${CFG.PASS_PCT||70}% (${Math.round(totalQs*(CFG.PASS_PCT||70)/100)} / ${totalQs})</div></div>
-        
-        
+        <div class="ic"><div class="ck">Assessment Mode</div><div class="cv">${assessMode}</div></div>
+        <div class="ic"><div class="ck">Reference No.</div><div class="cv">${refNo}</div></div>
       </div>
     </div>
-    <div class="sv-bars">
-      <div class="sv-bar-row"><span class="sv-bar-lbl">Correct</span><div class="sv-bar-track"><div class="sv-bar-fill correct" style="width:${correctPct}%"></div></div><span class="sv-bar-pct">${S.score} q &middot; ${correctPct}%</span></div>
-      <div class="sv-bar-row"><span class="sv-bar-lbl">Wrong</span><div class="sv-bar-track"><div class="sv-bar-fill wrong" style="width:${wrongPct}%"></div></div><span class="sv-bar-pct">${wrong} q &middot; ${wrongPct}%</span></div>
-      ${skipped>0?`<div class="sv-bar-row"><span class="sv-bar-lbl">Unanswered</span><div class="sv-bar-track"><div class="sv-bar-fill skip" style="width:${skipPct}%"></div></div><span class="sv-bar-pct">${skipped} q &middot; ${skipPct}%</span></div>`:''}
-    </div>
-    
-    <div class="proctor-banner ${proctorCls}">
-      <div class="pb-icon">${proctorIcon}</div>
-      <div class="pb-body">
-        <div class="pb-title">${proctorTitle}</div>
-        <div class="pb-desc">${proctorDesc}</div>
-        <div style="margin-top:6px">${vidLinkHtml}</div>
+    <div class="r-divider"></div>
+    <div class="r-sec">
+      <div class="r-sec-lbl">Score Breakdown</div>
+      <div class="sv-bars">
+        <div class="sv-bar-row"><span class="sv-bar-lbl">Correct</span><div class="sv-bar-track"><div class="sv-bar-fill correct" style="width:${correctPct}%"></div></div><span class="sv-bar-pct">${S.score} q &middot; ${correctPct}%</span></div>
+        <div class="sv-bar-row"><span class="sv-bar-lbl">Wrong</span><div class="sv-bar-track"><div class="sv-bar-fill wrong" style="width:${wrongPct}%"></div></div><span class="sv-bar-pct">${wrong} q &middot; ${wrongPct}%</span></div>
+        ${skipped>0?`<div class="sv-bar-row"><span class="sv-bar-lbl">Unanswered</span><div class="sv-bar-track"><div class="sv-bar-fill skip" style="width:${skipPct}%"></div></div><span class="sv-bar-pct">${skipped} q &middot; ${skipPct}%</span></div>`:''}
       </div>
-      <div class="pb-count">${S.blurCount}</div>
+    </div>
+    <div class="r-divider"></div>
+    <div class="r-sec">
+      <div class="r-sec-lbl">Assessment Conditions</div>
+      <div class="integrity-note">
+        This assessment was conducted under continuous video proctoring${S.inPersonMode?' at an in-person, supervised session':' via a candidate-specific access link'}, with automated monitoring for focus loss and camera/microphone activity throughout. A detailed, timestamped proctoring log is included in the appendix (Page 3) of this report. ${vidUrl?vidLinkHtml:'The proctoring video for this session is still uploading and will be available in the source Drive folder shortly.'}
+      </div>
     </div>
     <div class="sig-block">
       <div class="sig-row">
@@ -4075,7 +4197,7 @@ function closeVidModal(){
 /* ═══ AI PROCTORING — LOW SENSITIVITY ═══════════════════ */
 const AIP={active:false,canvas:null,ctx:null,audioCtx:null,analyser:null,
   faceInterval:null,audioInterval:null,noFaceStreak:0,multiFaceStreak:0,
-  lastFrame:null,motionStreak:0,audioStreak:0,flags:[]};
+  lastFrame:null,motionStreak:0,audioStreak:0,flags:[],lastFlagAt:{}};
 async function initAIProctoring(){
   if(!S.camStream)return;
   AIP.active=true;
@@ -4124,7 +4246,14 @@ function runFaceCheck(){
   const motionR=motionPx/(total/step);
   if(skinR<0.008){AIP.noFaceStreak++;if(AIP.noFaceStreak>=4){aiFlag('face_absent','No face detected — candidate may have left','warn');AIP.noFaceStreak=0;}}
   else AIP.noFaceStreak=0;
-  if(skinR>0.45){AIP.multiFaceStreak++;if(AIP.multiFaceStreak>=3){aiFlag('multi_face','Multiple persons detected','crit');AIP.multiFaceStreak=0;}}
+  // Threshold history: 0.45 (too strict — a warm-toned wall, desk or door
+  // behind the candidate reads as "skin" to this same crude R>G>B pixel
+  // heuristic used for face presence, not real face counting, and could
+  // stay pegged above 0.45 long after a second person actually left).
+  // Raised to 0.6 and the required consecutive readings 3→5 (~17.5s
+  // sustained at 3.5s/check) so a moment of clutter or a person passing
+  // through frame briefly no longer counts.
+  if(skinR>0.6){AIP.multiFaceStreak++;if(AIP.multiFaceStreak>=5){aiFlag('multi_face','Multiple persons detected','crit');AIP.multiFaceStreak=0;}}
   else AIP.multiFaceStreak=0;
   if(motionR>0.2){AIP.motionStreak++;if(AIP.motionStreak>=2){aiFlag('bg_motion','Persistent background motion','warn');AIP.motionStreak=0;}}
   else if(AIP.motionStreak>0)AIP.motionStreak--;
@@ -4136,16 +4265,27 @@ function runAudioCheck(){
   let speech=0;for(let i=3;i<=35;i++)speech+=buf[i];
   const avg=speech/33;
   // Threshold history: 70 (too lenient, missed real singing/talking) →
-  // 45 (too strict, tripped on distant office chatter through the mic
-  // even with nobody near the candidate) → 60 now, with the required
-  // consecutive readings raised 2→3 (~9s sustained at 3s/check) so a
-  // brief or distant sound no longer counts — only sustained, closer
-  // speech does. Net effect: meaningfully less sensitive than before
-  // while still catching someone talking through the exam.
-  if(avg>60){AIP.audioStreak++;if(AIP.audioStreak>=3){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
+  // 45 (too strict, tripped on distant office chatter) → 60 (still
+  // tripped in a silent room — mic auto-gain control on some devices
+  // amplifies the room's own noise floor high enough to cross a fixed
+  // level threshold regardless of anyone actually speaking; no single
+  // level number is reliable across mics/rooms). Raised further to 78
+  // and required consecutive readings 3→5 (~15s sustained) so only a
+  // clearly loud, sustained sound trips it.
+  if(avg>78){AIP.audioStreak++;if(AIP.audioStreak>=5){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
   else if(AIP.audioStreak>0)AIP.audioStreak--;
 }
+// Cooldown per flag type: once a type fires, it can't fire again for 60s
+// even if its streak condition keeps being met on every following check.
+// Without this, a sustained condition (a genuinely noisy room, a static
+// warm-colored background) re-armed and re-fired every single streak
+// window for the rest of the exam — one real incident could read back as
+// 30-50 near-identical "violations" by the end, which is what made the
+// report's violation count look uncontrolled rather than meaningful.
 function aiFlag(type,msg,severity){
+  const now=Date.now();
+  if(AIP.lastFlagAt[type]&&now-AIP.lastFlagAt[type]<60000)return;
+  AIP.lastFlagAt[type]=now;
   const ts=new Date().toLocaleTimeString('en-GB');
   AIP.flags.push({ts,type,msg,severity});
   S.forensics.push({ts,ev:'[AI:'+(severity==='crit'?'CRITICAL':'WARNING')+'] '+msg});
@@ -4175,25 +4315,35 @@ async function initTokenMode(){
     if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
     if(result.err)return showTokenError(result.msg);
     const tok=result.tok;
-    // A token stuck 'inprogress' from an earlier attempt (e.g. the candidate
-    // closed the tab mid-exam, or submission never completed) must not let
-    // the same link be reopened and reused — otherwise the same exam can be
-    // taken repeatedly, each attempt logged as its own row.
-    if(tok.status==='inprogress')return showTokenError('This exam session was already started and cannot be resumed or retaken. Contact HR.');
+    // A token 'inprogress' from an earlier attempt (the candidate reloaded,
+    // closed the tab, or lost connection mid-exam) now RESUMES instead of
+    // being blocked — a real screen refresh must never cost someone their
+    // whole exam. Resuming re-verifies identity via the camera gate below,
+    // then restores the same question set/answers and the server's own
+    // remaining time (never a fresh clock) from handleStartExam. Retaking a
+    // genuinely finished exam is still blocked — that flips status to
+    // 'used', a separate case handled above by validateToken().
+    const isResume=tok.status==='inprogress';
     // Cache the resolved token locally so lockToken()/completeToken() (which
     // look it up by id) find it — a short link has no local copy yet on a
     // brand-new device even though validateToken() just resolved it fine.
     const _s=getTokStore();_s[tokId]=tok;saveTokStore(_s);
-    lockToken(tokId);S.tokenId=tokId;
+    lockToken(tokId);S.tokenId=tokId;S.inPersonMode=false;
     const info=discLabelInfo(tok.discKey);
     if(!info)return showTokenError('Invalid discipline. Contact HR.');
-    const drawn=await startExamRemote(tokId);
-    if(!drawn||drawn.length<1)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
-    S.qs=drawn;
+    const started=await startExamRemote(tokId);
+    if(!started)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
+    S.qs=started.questions;
     S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
     S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
-    S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.autoSubmittedForViolations=false;_submitStarted=false;
-    populateIntro();goto('s-cam-gate');
+    if(isResume){
+      S.answers=started.answers||{};S.skipped=started.skipped||{};
+      S._resumeSecsLeft=started.remainingSecs;
+    }else{
+      S.answers={};S.skipped={};S.curQ=0;S._resumeSecsLeft=null;
+    }
+    S.blurCount=0;S.forensics=[];S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
+    populateIntro();setCamGateCopy(isResume);goto('s-cam-gate');
   }catch(e){
     console.error('V3: token init failed:',e);
     showTokenError('Something went wrong opening this link. Reopen it, or contact HR if the problem continues.');
@@ -4206,34 +4356,92 @@ function showTokenError(msg){
     <p style="font-size:.78rem;color:rgba(232,226,214,.4);margin-top:16px">Contact your HR representative for a new access link.</p>
   </div></div>`;
 }
+// Called right before goto('s-cam-gate') so the screen already reads
+// correctly the instant it appears — not just after the candidate grants
+// camera access (see activateCamGate() below for the button text/action).
+function setCamGateCopy(isResume){
+  if($('cg-title'))$('cg-title').textContent=isResume?'Verify Your Identity to Resume':'Activate Proctoring';
+  if($('cg-desc'))$('cg-desc').textContent=isResume
+    ?'Your session was interrupted. Re-verify your camera and microphone to resume the exam exactly where you left off — your answers and time remaining are unaffected.'
+    :'This examination requires your camera and microphone throughout the session. You cannot proceed without camera access.';
+}
 async function activateCamGate(){
   try{
     S.camStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});
     S.camReady=true;
     const v=$('cg-video');if(v){v.srcObject=S.camStream;v.style.display='block';}
     $('cg-status').textContent='✓ Camera & microphone active';
-    $('cg-btn').textContent='Proceed to Exam Briefing →';
+    // Resuming after a reload (S._resumeSecsLeft set by initTokenMode()/
+    // tryResumeInPersonSession()) skips the briefing screen entirely —
+    // the candidate already saw it before the reload — and goes straight
+    // back into the exam at the server's real remaining time.
+    const isResume=S._resumeSecsLeft!=null;
+    $('cg-btn').textContent=isResume?'Resume Exam →':'Proceed to Exam Briefing →';
     $('cg-btn').onclick=()=>{
       const pv=$('pip-video');if(pv)pv.srcObject=S.camStream;
-      goto('s-intro');
+      if(isResume){const secs=S._resumeSecsLeft;S._resumeSecsLeft=null;startExam(secs);}
+      else goto('s-intro');
     };
     hideErr('cg-err');
   }catch(e){showErr('cg-err','Camera denied — allow access in browser settings.');}
 }
 
-/* ═══ SAVE / CLEAR STATE ══════════════════════════════ */
-function saveState(){
-  try{localStorage.setItem('v3_exam',JSON.stringify({
-    name:S.name,email:S.email,discKey:S.discKey,discipline:S.discipline,
-    division:S.division,seniority:S.seniority,position:S.position,
-    answers:S.answers,skipped:S.skipped,secsLeft:S.secsLeft,
-    blurCount:S.blurCount,forensics:S.forensics,startTs:S.startTs,curQ:S.curQ,
-  }));}catch(e){}
+/* ═══ IN-PERSON RESUME ═════════════════════════════════
+   Test Taker (in-person) sessions have no ?token= URL to detect a reload
+   by, unlike the online candidate-link flow — launchSession() leaves a
+   marker in localStorage instead (see there), and this checks for it at
+   boot. Mirrors initTokenMode()'s resume branch: re-verify via the camera
+   gate, then continue with the same question set/answers and the server's
+   real remaining time, never a fresh clock or a lost exam. */
+async function tryResumeInPersonSession(){
+  const tokId=localStorage.getItem('v3_inperson_token');
+  if(!tokId)return;
+  // goto('s-boot') below actively strips .on from every screen including
+  // s-role (see goto()) — removing the tok-boot html class alone only
+  // undoes the CSS override, it doesn't bring s-role's .on back. Both
+  // fallbacks below must explicitly goto('s-role') for the same reason,
+  // not just tidy up the class.
+  const backToRoleScreen=()=>{
+    document.documentElement.classList.remove('tok-boot');
+    goto('s-role');
+  };
+  // Genuinely invalid/stale marker (revoked, deleted, already completed
+  // elsewhere) — forget it so it stops being offered on future reloads.
+  const abandon=()=>{
+    try{localStorage.removeItem('v3_inperson_token');}catch(e){}
+    backToRoleScreen();
+  };
+  try{
+    const result=await validateToken(tokId);
+    if(!result||result.err||result.tok.status!=='inprogress')return abandon();
+    const tok=result.tok;
+    const info=discLabelInfo(tok.discKey);
+    if(!info)return abandon();
+    goto('s-boot');
+    const started=await startExamRemote(tokId);
+    // Offline/unreachable — this could still be a perfectly valid session,
+    // so the marker deliberately stays (next reload retries) rather than
+    // being treated as abandoned.
+    if(!started)return backToRoleScreen();
+    S.tokenId=tokId;S.inPersonMode=true;
+    S.qs=started.questions;
+    S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
+    S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
+    S.answers=started.answers||{};S.skipped=started.skipped||{};
+    S.blurCount=0;S.forensics=[];S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
+    S._resumeSecsLeft=started.remainingSecs;
+    populateIntro();setCamGateCopy(true);goto('s-cam-gate');
+  }catch(e){
+    console.error('V3: in-person resume failed:',e);
+    abandon();
+  }
 }
-function clearState(){try{localStorage.removeItem('v3_exam');}catch(e){}}
 
 /* ═══ INIT ═══════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', async ()=>{
+  // Remember the last CC address an operator used on the token generator —
+  // it's almost always the same HR inbox every time.
+  try{const savedCc=localStorage.getItem('v3_tp_cc');if(savedCc&&$('tp-cc'))$('tp-cc').value=savedCc;}catch(e){}
   // Restore a Master-entered GS URL from localStorage, but only if it's a
   // normal public deployment (https://script.google.com/macros/s/...). A
   // domain-restricted deployment URL (.../a/<domain>/macros/s/...) can
@@ -4255,6 +4463,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   renderDivCards();
   refreshAllDiscSelects();
   if(getTokenFromURL()) await initTokenMode();
+  else if(localStorage.getItem('v3_inperson_token')) await tryResumeInPersonSession();
   else restoreStaffSession();
   setTimeout(updateEpDisplay, 500);
 });
