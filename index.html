@@ -3380,7 +3380,7 @@ function updateProctorBadge(){
 }
 
 /* ═══ VIDEO RECORDING (MediaRecorder) ═══════════════════ */
-let _mr=null,_vidChunks=[];
+let _mr=null,_vidChunks=[],_videoStopResolve=null;
 function startVideoRecording(){
   if(!S.camStream)return;
   _vidChunks=[];
@@ -3410,36 +3410,56 @@ function startVideoRecording(){
     if(!MediaRecorder.isTypeSupported(opts.mimeType)){delete opts.mimeType;}
     _mr=new MediaRecorder(stream,opts);
     _mr.ondataavailable=e=>{if(e.data?.size>0)_vidChunks.push(e.data);};
+    // Deliberately does NOT call uploadVideoToDrive() here. It used to,
+    // firing the upload_video POST the instant the browser finished
+    // flushing the recording — independently of, and often well before,
+    // submitToSheets() in finaliseExam() below ever created the exam's
+    // row in the Sheet. The backend's writeLink() only had a 30s retry
+    // budget to find a row that might not exist yet, and once that
+    // budget ran out the video link was simply never written — exactly
+    // the "video is in Drive but the Sheet link never/eventually shows
+    // up" symptom reported from live testing. Storing the finished blob
+    // and letting finaliseExam() upload it explicitly, only after the
+    // Sheet row is confirmed to exist, removes the race entirely instead
+    // of just widening the retry window around it.
     _mr.onstop=()=>{
       clearInterval(drawInt);
       const blob=new Blob(_vidChunks,{type:'video/webm'});
       S.videoUrl=URL.createObjectURL(blob);
-      uploadVideoToDrive(blob);
+      if(_videoStopResolve){_videoStopResolve(blob);_videoStopResolve=null;}
     };
     _mr.start(5000);
   }catch(e){console.warn('Video recording unavailable:',e);}
 }
+// Resolves once the recorder has actually finished flushing and the blob
+// is ready — MediaRecorder.stop() is asynchronous, so callers that need
+// the finished blob (finaliseExam) must await this rather than call
+// stopVideoRecording() and assume the blob exists immediately after.
 function stopVideoRecording(){
-  if(_mr&&_mr.state!=='inactive')_mr.stop();
+  return new Promise(resolve=>{
+    if(_mr&&_mr.state!=='inactive'){_videoStopResolve=resolve;_mr.stop();}
+    else resolve(null);
+  });
 }
 async function uploadVideoToDrive(blob){
   try{
-    const reader=new FileReader();
-    reader.onload=async()=>{
-      const b64=reader.result.split(',')[1];
-      const data=await gsPost({
-        action:'upload_video',
-        name:S.name,email:S.email,
-        submissionTs:S.submissionTs,
-        discipline:S.discipline,division:S.division,seniority:S.seniority,
-        video_b64:b64
-      });
-      if(data?.fileUrl){
-        S.videoUploadUrl=data.fileUrl;
-        console.log('V3: video uploaded ✓',data.fileUrl);
-      }
-    };
-    reader.readAsDataURL(blob);
+    const b64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result.split(',')[1]);
+      reader.onerror=()=>reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+    const data=await gsPost({
+      action:'upload_video',
+      name:S.name,email:S.email,
+      submissionTs:S.submissionTs,
+      discipline:S.discipline,division:S.division,seniority:S.seniority,
+      video_b64:b64
+    });
+    if(data?.fileUrl){
+      S.videoUploadUrl=data.fileUrl;
+      console.log('V3: video uploaded ✓',data.fileUrl);
+    }
   }catch(e){console.warn('V3: video upload failed:',e);}
 }
 
@@ -3530,7 +3550,7 @@ async function finaliseExam(){
   S.submissionTs = new Date().toISOString(); // shared across all upload payloads
   clearInterval(S.timerRef);
   $('cam-pip')?.classList.remove('on');
-  stopVideoRecording();
+  const videoBlobPromise = stopVideoRecording();
   stopAIProctoring();
 
   // Score — graded by Apps Script against the same draw it gave this
@@ -3556,10 +3576,22 @@ async function finaliseExam(){
   // Step 1: write the exam row to the sheet and WAIT for confirmation
   await submitToSheets();
 
-  // Step 2: build report card HTML and upload — writes Drive Report link back to sheet
-  await generateAndUploadPdf();
+  // Step 2: upload the video now that the row is confirmed to exist.
+  // This used to fire independently, as soon as the recording finished —
+  // often well before Step 1 above had even run — so the backend's
+  // writeLink() could spend its whole retry budget looking for a Sheet
+  // row that wasn't there yet, and sometimes never find it in time (the
+  // video would be sitting in Drive with no link in the Sheet). Awaiting
+  // Step 1 first removes that race outright. Doing this BEFORE Step 3,
+  // rather than after, also means S.videoUploadUrl is normally already
+  // set by the time the report is built, so the exported report's own
+  // "Review Proctoring Video" link points at the real Drive file instead
+  // of a browser-local blob: URL that stops working once this tab closes.
+  const videoBlob = await videoBlobPromise;
+  if(videoBlob) await uploadVideoToDrive(videoBlob);
 
-  // Video upload fires independently via stopVideoRecording()→onstop→uploadVideoToDrive
+  // Step 3: build report card HTML and upload — writes Drive Report link back to sheet
+  await generateAndUploadPdf();
 }
 /* ── APPS SCRIPT FETCH (with redirect + error handling) ──────────────
    Apps Script Web Apps return a 302 redirect before the JSON response.
