@@ -3939,24 +3939,19 @@ function buildReport(){
     <span>V3 Middle East Engineering Consultants Co. &nbsp;|&nbsp; <span class="gd">Visio · Vertere · Virtute</span> &nbsp;|&nbsp; v3international.com &nbsp;|&nbsp; Generated ${dateStr} ${timeStr}</span>
     <span class="pgn">Page ${n} of ${tot}</span>
   </div>`;}
-  // Wraps a Q&A table so it's hidden by default in the exported report —
+  // Wraps the Q&A table so it's hidden by default in the exported report —
   // most people reviewing results only need the summary/score, not the
   // full answer key. unlockQA() (defined in generateAndUploadPdf(), only
-  // present in the exported standalone file) reveals every gated table
-  // on the page at once — one passkey entry unlocks both Page 2 and
-  // Page 3. Only the FIRST gate (showForm=true, Page 2) renders the
-  // actual password field; Page 3's is a plain locked notice with no
-  // input of its own, so the passkey is only ever entered once.
-  function qaGate(tableHtml,showForm){return `<div class="qa-locked">
+  // present in the exported standalone file) reveals it on passkey entry.
+  function qaGate(tableHtml){return `<div class="qa-locked">
       <div class="qa-lock-icon">🔒</div>
       <div class="qa-lock-title">Detailed Q&amp;A Breakdown — Hidden</div>
-      ${showForm ? `<div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Admin passkey to review them for this candidate — unlocking here also reveals Page 3.</div>
+      <div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Admin passkey to review them for this candidate.</div>
       <div class="qa-pass-row">
         <input type="password" class="qa-pass-input" placeholder="Admin passkey" onkeydown="if(event.key==='Enter')unlockQA(this.nextElementSibling)">
         <button class="qa-unlock-btn" onclick="unlockQA(this)">Unlock</button>
       </div>
-      <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>`
-      : `<div class="qa-lock-desc">Enter the Admin passkey on Page 2 to unlock this section too.</div>`}
+      <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>
     </div>
     <div class="qa-real-content" style="display:none">${tableHtml}</div>`;}
 
@@ -4029,7 +4024,7 @@ function buildReport(){
         <div class="sig-item"><div class="sl">Authorised Stamp</div></div>
       </div>
     </div>
-    ${pgFtr(1,3)}
+    ${pgFtr(1,2)}
   </div>`;
 
   /* QA row builder — NO difficulty column */
@@ -4054,44 +4049,23 @@ function buildReport(){
     }).join('');
   }
 
-  /* PAGE 2 */
-  /* PAGE 2 — Q1 to Q10 */
-  const pg2Qs = S.qs.slice(0,10);
-  const pg2Table = pg2Qs.length ? `<table class="qa-tbl">
+  /* PAGE 2 — Q1 to Q{totalQs}, continuous (no artificial split partway
+     through the table) + Forensic Log. Used to be forced into exactly two
+     pages (Q1-10, then Q11+), which either wasted space or cut the table
+     awkwardly depending on the real question count. One table now flows
+     naturally across as many printed pages as it needs — browsers already
+     paginate a long table between rows on their own. */
+  const qaTable = totalQs ? `<table class="qa-tbl">
     <thead><tr>
       <th style="width:28px">#</th><th style="width:36px">Sec</th>
       <th>Question</th><th style="width:160px">Candidate Answer</th>
       <th style="width:155px">Correct Answer</th><th style="width:70px">Result</th>
     </tr></thead>
-    <tbody>${buildQRows(pg2Qs,0)}</tbody>
+    <tbody>${buildQRows(S.qs,0)}</tbody>
   </table>` : '<p style="padding:10px 24px;font-size:.82rem;color:#888">No questions.</p>';
 
-  const page2 = `<div class="rpt-pg">
-    ${pgHdr('Detailed Evaluation — Page 2 of 3 \xb7 Questions 1\u201310')}
-    <div class="qa-pg-hdr">
-      <div class="qa-pg-icon">\u{1F4CB}</div>
-      <div>
-        <div class="qa-pg-title">Question-by-Question Response \u2014 Q1 to Q10</div>
-        <div class="qa-pg-sub">${S.score} correct \xb7 ${wrong} wrong \xb7 ${skipped} unanswered \xb7 ${Math.min(10,totalQs)} shown</div>
-      </div>
-    </div>
-    ${qaGate(pg2Table,true)}
-    ${pgFtr(2,3)}
-  </div>`;
-
-  /* PAGE 3 — Q11+ and Forensic Log */
-  const pg3Qs = S.qs.slice(10);
-  const pg3Table = pg3Qs.length ? `<table class="qa-tbl">
-    <thead><tr>
-      <th style="width:28px">#</th><th style="width:36px">Sec</th>
-      <th>Question</th><th style="width:160px">Candidate Answer</th>
-      <th style="width:155px">Correct Answer</th><th style="width:70px">Result</th>
-    </tr></thead>
-    <tbody>${buildQRows(pg3Qs,10)}</tbody>
-  </table>` : '<p style="padding:10px 24px;font-size:.82rem;color:#888">All questions shown on Page 2.</p>';
-
   const forensicRows = S.forensics.length === 0
-    ? '<div class="flog2-row"><span class="flog2-ts">\u2014</span><span class="flog2-ev">No violations or anomalies recorded.</span></div>'
+    ? '<div class="flog2-row"><span class="flog2-ts">—</span><span class="flog2-ev">No violations or anomalies recorded.</span></div>'
     : S.forensics.map(f=>{
         const isAI=f.ev.startsWith('[AI:'),isCrit=f.ev.includes('CRITICAL');
         return '<div class="flog2-row"><span class="flog2-ts">'+f.ts+'</span><span class="flog2-ev'+(isAI?' ai-'+(isCrit?'c':'w'):'')+'">' + escH(f.ev) + '</span></div>';
@@ -4103,26 +4077,26 @@ function buildReport(){
       + '<div class="flog2">' + aipFlags.map(f=>'<div class="flog2-row"><span class="flog2-ts">'+f.ts+'</span><span class="flog2-ev ai-'+(f.severity==='crit'?'c':'w')+'">'+escH('[AI:'+f.type+'] '+f.msg)+'</span></div>').join('') + '</div>'
     : '';
 
-  const page3 = `<div class="rpt-pg">
-    ${pgHdr('Detailed Evaluation \u2014 Page 3 of 3 \xb7 Questions 11\u2013' + totalQs + ' &amp; Forensic Log')}
+  const page2 = `<div class="rpt-pg">
+    ${pgHdr('Detailed Evaluation — Page 2 of 2 \xb7 Questions 1–' + totalQs + ' &amp; Forensic Log')}
     <div class="qa-pg-hdr">
       <div class="qa-pg-icon">\u{1F4CB}</div>
       <div>
-        <div class="qa-pg-title">Question-by-Question Response \u2014 Q11 to Q${totalQs}</div>
+        <div class="qa-pg-title">Question-by-Question Response — Q1 to Q${totalQs}</div>
         <div class="qa-pg-sub">${S.score} correct \xb7 ${wrong} wrong \xb7 ${skipped} unanswered \xb7 ${totalQs} total</div>
       </div>
     </div>
-    ${qaGate(pg3Table,false)}
+    ${qaGate(qaTable)}
     <div class="flog-sec">
       <div class="r-sec-lbl">\u{1F50D} Proctoring &amp; Forensic Log</div>
       <div style="font-size:.78rem;color:#555;margin-bottom:7px">Focus violations: ${S.blurCount} &nbsp;|&nbsp; ${vidLinkHtml}</div>
       <div class="flog2">${forensicRows}</div>
       ${aiRows}
     </div>
-    ${pgFtr(3,3)}
+    ${pgFtr(2,2)}
   </div>`;
 
-  $('rpt-doc').innerHTML=page1+page2+page3;
+  $('rpt-doc').innerHTML=page1+page2;
 }
 
 /* Video modal */
@@ -4215,15 +4189,14 @@ function runAudioCheck(){
   AIP.analyser.getByteFrequencyData(buf);
   let speech=0;for(let i=3;i<=35;i++)speech+=buf[i];
   const avg=speech/33;
-  // Threshold history: 70 (too lenient, missed real singing/talking) →
-  // 45 (too strict, tripped on distant office chatter) → 60 (still
-  // tripped in a silent room — mic auto-gain control on some devices
-  // amplifies the room's own noise floor high enough to cross a fixed
-  // level threshold regardless of anyone actually speaking; no single
-  // level number is reliable across mics/rooms). Raised further to 78
-  // and required consecutive readings 3→5 (~15s sustained) so only a
-  // clearly loud, sustained sound trips it.
-  if(avg>78){AIP.audioStreak++;if(AIP.audioStreak>=5){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
+  // Threshold history: 70 → 45 (too strict, tripped on distant office
+  // chatter) → 60 (still tripped in a silent room — mic auto-gain on some
+  // devices amplifies the noise floor regardless of anyone speaking) → 78
+  // /streak 5 (too lenient the other way — a nearby conversation, e.g.
+  // someone else's laptop meeting a few feet away, went uncaught). Nudged
+  // back down slightly to 70/streak 4 (~12s sustained) — a small step
+  // toward stricter, not a swing back to the old failure mode.
+  if(avg>70){AIP.audioStreak++;if(AIP.audioStreak>=4){aiFlag('audio_speech','Persistent speech / whispering detected (level:'+Math.round(avg)+')','warn');AIP.audioStreak=0;}}
   else if(AIP.audioStreak>0)AIP.audioStreak--;
 }
 // Cooldown per flag type: once a type fires, it can't fire again for 60s
