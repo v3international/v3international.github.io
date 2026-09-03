@@ -6,8 +6,11 @@
 <title>V3 ME — Proctored Screening Enterprise</title>
 <script>
 /* Runs before the body is parsed: a candidate link (?token=...) must
-   never show the role-selection menu, even for a single frame. */
-if(new URLSearchParams(location.search).get('token')) document.documentElement.classList.add('tok-boot');
+   never show the role-selection menu, even for a single frame. Same
+   applies to an in-person session resuming after a reload — it has no
+   ?token= of its own, but the marker tryResumeInPersonSession() checks
+   is already known here, synchronously, so it gets the same treatment. */
+if(new URLSearchParams(location.search).get('token') || localStorage.getItem('v3_inperson_token')) document.documentElement.classList.add('tok-boot');
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,700;0,800;1,500&family=Outfit:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -1627,8 +1630,8 @@ body.light .modal{background:#fff}
     <div class="cgbox">
       <div style="font-size:2.2rem;margin-bottom:6px">📷</div>
       <div style="font-family:var(--mono);font-size:.64rem;letter-spacing:.26em;color:var(--lbl);text-transform:uppercase;margin-bottom:8px">Camera Required</div>
-      <h2>Activate Proctoring</h2>
-      <p>This examination requires your camera and microphone throughout the session. You cannot proceed without camera access.</p>
+      <h2 id="cg-title">Activate Proctoring</h2>
+      <p id="cg-desc">This examination requires your camera and microphone throughout the session. You cannot proceed without camera access.</p>
       <video id="cg-video" autoplay muted playsinline></video>
       <div class="cg-status" id="cg-status">Awaiting camera permission…</div>
       <button class="btn btn-gold btn-w100" id="cg-btn" onclick="activateCamGate()">Activate Camera &amp; Continue →</button>
@@ -2884,11 +2887,32 @@ async function fetchAllTokensRemote(){
    live bank stored in Drive, strips the answers, and returns only that.
    Grading works the same way in reverse: submitted answers are graded by
    Apps Script against the same draw, never by the candidate's own browser. */
+// Returns the whole response, not just the question set — as of Code.gs
+// v8.10 this also carries remainingSecs (server-computed, authoritative)
+// and any answers/skips already synced for this token, which is what lets
+// a reload resume the exam instead of restarting or locking it out.
 async function startExamRemote(tokenId){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
   const resp=await gsPost({action:'start_exam',token:tokenId});
-  if(resp?.ok&&Array.isArray(resp.questions)&&resp.questions.length)return resp.questions;
+  if(resp?.ok&&Array.isArray(resp.questions)&&resp.questions.length)return resp;
   return null;
+}
+// Persists S.answers/S.skipped to the backend so an in-progress exam
+// survives a reload. Debounced (not one request per keystroke-equivalent
+// click) but still effectively continuous from the candidate's point of
+// view — every answer change lands within a fraction of a second. If the
+// server reports the real deadline has already passed (a stale or
+// clock-manipulated client trying to keep going past time), submit
+// immediately rather than let the candidate keep answering into the void.
+let _syncAnsTimer=null;
+function syncAnswerRemote(){
+  if(!S.tokenId)return;
+  clearTimeout(_syncAnsTimer);
+  _syncAnsTimer=setTimeout(()=>{
+    gsPost({action:'sync_answer',token:S.tokenId,answers:S.answers,skipped:S.skipped})
+      .then(r=>{ if(r?.expired&&examInProgress)beginFinalSubmit(); })
+      .catch(()=>{});
+  },500);
 }
 async function gradeExamRemote(tokenId,answers){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
@@ -2955,7 +2979,17 @@ function lockToken(id){
   const s=getTokStore();
   let tok=s[id];
   if(!tok){const embedded=decodeTokenPayload(id);if(embedded)tok={id,...embedded,status:'active'};}
-  if(tok){tok.status='inprogress';tok.startedAt=new Date().toISOString();s[id]=tok;saveTokStore(s);pushTokenRemote(tok);}
+  if(tok){
+    // A reload resumes the same 'inprogress' session (see initTokenMode()/
+    // tryResumeInPersonSession()) rather than blocking it, and lockToken()
+    // gets called again on that path — startedAt must stay the ORIGINAL
+    // start time for accurate admin reporting, not get bumped forward on
+    // every reload. The exam clock itself is tracked independently and
+    // authoritatively server-side (examData.startTs in Code.gs), so this
+    // field is informational only, never used to compute remaining time.
+    if(tok.status!=='inprogress')tok.startedAt=new Date().toISOString();
+    tok.status='inprogress';s[id]=tok;saveTokStore(s);pushTokenRemote(tok);
+  }
 }
 function completeToken(id){
   const s=getTokStore();
@@ -2990,6 +3024,9 @@ function completeToken(id){
   }
   saveTokStore(s);
   if(tok) pushTokenRemote(tok);
+  // Session is genuinely over — an in-person resume marker pointing at it
+  // must not offer to resume a completed exam on the next reload.
+  try{ if(localStorage.getItem('v3_inperson_token')===id) localStorage.removeItem('v3_inperson_token'); }catch(e){}
 }
 
 // ── GLOBAL: tracks which screen to return to from s-report ──────────────
@@ -3252,13 +3289,17 @@ async function launchSession(){
     if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
     return showErr('setup-err','Could not connect to the exam backend — check the connection and try again.');
   }
-  const drawn=await startExamRemote(tokenId);
+  const started=await startExamRemote(tokenId);
   if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
-  if(!drawn||drawn.length<1)return showErr('setup-err','Could not load exam questions — check the connection and try again.');
-  S.qs=drawn;S.tokenId=tokenId;
+  if(!started)return showErr('setup-err','Could not load exam questions — check the connection and try again.');
+  S.qs=started.questions;S.tokenId=tokenId;S.inPersonMode=true;
   S.name=name;S.email=email;S.phone=phone;S.position=pos;
   S.discKey=_discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=_sen;
-  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
+  S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;S._resumeSecsLeft=null;_submitStarted=false;
+  // Remembers which in-person session is live on THIS device, so a reload
+  // (no ?token= in the URL for this mode, unlike the online candidate-link
+  // flow) can still find its way back to it — see tryResumeInPersonSession().
+  try{localStorage.setItem('v3_inperson_token',tokenId);}catch(e){}
   populateIntro();goto('s-intro');
 }
 function populateIntro(){
@@ -3280,13 +3321,30 @@ function populateIntro(){
    EXAM ENGINE
 ═══════════════════════════════════════════════════════ */
 let examInProgress=false;
-function startExam(){
+// resumeSecsLeft is only passed when re-entering an exam already in
+// progress after a reload (see activateCamGate()/initTokenMode()) — the
+// server-computed remaining time (never a fresh full clock, and never
+// anything the client itself claims — see handleStartExam in Code.gs) and
+// the question index to land on both come from that resume, not from
+// scratch. Called with no arguments, this is exactly the original
+// fresh-start behaviour.
+function startExam(resumeSecsLeft){
   examInProgress=true;
-  S.secsLeft=CFG.EXAM_SECS;S.startTs=new Date().toISOString();
+  const isResume=resumeSecsLeft!=null;
+  S.secsLeft=isResume?resumeSecsLeft:CFG.EXAM_SECS;
+  S.startTs=S.startTs||new Date().toISOString();
   $('cam-pip')?.classList.add('on');
   const v=$('pip-video');if(v&&S.camStream)v.srcObject=S.camStream;
   if($('exam-disc'))$('exam-disc').textContent=S.discipline+' — '+S.division;
   buildTracker();updateTimer();
+  if(isResume&&S.secsLeft<=0){
+    // The real deadline had already passed before the candidate even got
+    // back in (e.g. reloaded long after time ran out without submitting)
+    // — submit immediately rather than flashing the exam screen first.
+    goto('s-exam');
+    setTimeout(()=>beginFinalSubmit(),50);
+    return;
+  }
   S.timerRef=setInterval(()=>{
     S.secsLeft--;updateTimer();
     if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');beginFinalSubmit();},3200);}
@@ -3298,7 +3356,11 @@ function startExam(){
     const req=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||el.msRequestFullscreen;
     if(req) req.call(el).catch(()=>{});
   }catch(e){}
-  goto('s-exam');renderQ(0);
+  goto('s-exam');renderQ(isResume?firstUnansweredIdx():0);
+}
+function firstUnansweredIdx(){
+  for(let i=0;i<S.qs.length;i++) if(S.answers[i]===undefined) return i;
+  return Math.max(0,S.qs.length-1);
 }
 function updateTimer(){
   const el=$('exam-timer');if(!el)return;
@@ -3511,9 +3573,9 @@ function renderQ(idx){
   if($('nav-submit')){$('nav-submit').style.display=_isLast?'':'none';}
   updateTracker();updateFooter();window.scrollTo(0,0);
 }
-function pickAns(qi,oi){S.answers[qi]=oi;delete S.skipped[qi];renderQ(S.curQ);}
+function pickAns(qi,oi){S.answers[qi]=oi;delete S.skipped[qi];renderQ(S.curQ);syncAnswerRemote();}
 function navQ(dir){const n=S.curQ+dir;if(n>=0&&n<S.qs.length)renderQ(n);}
-function skipQ(){S.skipped[S.curQ]=true;if(S.curQ<S.qs.length-1)renderQ(S.curQ+1);}
+function skipQ(){S.skipped[S.curQ]=true;if(S.curQ<S.qs.length-1)renderQ(S.curQ+1);syncAnswerRemote();}
 function updateFooter(){
   const ans=Object.keys(S.answers).length,tot=S.qs.length,pct=(ans/tot)*100;
   if($('foot-info'))$('foot-info').textContent=ans+' / '+tot+' answered';
@@ -3847,7 +3909,10 @@ function buildReport(){
   // submission timestamp — not fabricated data, just a traceable ID for
   // this specific attempt, useful once records run into the hundreds.
   const refNo='V3-'+String(S.submissionTs||S.endTs||'').replace(/[^0-9]/g,'').slice(-10);
-  const assessMode=S.tokenId?'Online (Remote Link)':'In-Person (Proctored)';
+  // S.tokenId alone can't distinguish these — both online and in-person
+  // exams now run through the same token-backed server flow (see
+  // launchSession()/initTokenMode()), so S.inPersonMode is the real flag.
+  const assessMode=S.inPersonMode?'In-Person (Proctored)':'Online (Remote Link)';
 
   const vidUrl=S.videoUploadUrl||S.videoUrl||'';
   // A plain link, not onclick="openVideoModal(...)" — this markup is only
@@ -3951,7 +4016,7 @@ function buildReport(){
     <div class="r-sec">
       <div class="r-sec-lbl">Assessment Conditions</div>
       <div class="integrity-note">
-        This assessment was conducted under continuous video proctoring${S.tokenId?' via a candidate-specific access link':' at an in-person, supervised session'}, with automated monitoring for focus loss and camera/microphone activity throughout. A detailed, timestamped proctoring log is included in the appendix (Page 3) of this report. ${vidUrl?vidLinkHtml:'The proctoring video for this session is still uploading and will be available in the source Drive folder shortly.'}
+        This assessment was conducted under continuous video proctoring${S.inPersonMode?' at an in-person, supervised session':' via a candidate-specific access link'}, with automated monitoring for focus loss and camera/microphone activity throughout. A detailed, timestamped proctoring log is included in the appendix (Page 3) of this report. ${vidUrl?vidLinkHtml:'The proctoring video for this session is still uploading and will be available in the source Drive folder shortly.'}
       </div>
     </div>
     <div class="sig-block">
@@ -4201,25 +4266,35 @@ async function initTokenMode(){
     if(!result)return showTokenError('Invalid or unrecognised access link. Contact HR.');
     if(result.err)return showTokenError(result.msg);
     const tok=result.tok;
-    // A token stuck 'inprogress' from an earlier attempt (e.g. the candidate
-    // closed the tab mid-exam, or submission never completed) must not let
-    // the same link be reopened and reused — otherwise the same exam can be
-    // taken repeatedly, each attempt logged as its own row.
-    if(tok.status==='inprogress')return showTokenError('This exam session was already started and cannot be resumed or retaken. Contact HR.');
+    // A token 'inprogress' from an earlier attempt (the candidate reloaded,
+    // closed the tab, or lost connection mid-exam) now RESUMES instead of
+    // being blocked — a real screen refresh must never cost someone their
+    // whole exam. Resuming re-verifies identity via the camera gate below,
+    // then restores the same question set/answers and the server's own
+    // remaining time (never a fresh clock) from handleStartExam. Retaking a
+    // genuinely finished exam is still blocked — that flips status to
+    // 'used', a separate case handled above by validateToken().
+    const isResume=tok.status==='inprogress';
     // Cache the resolved token locally so lockToken()/completeToken() (which
     // look it up by id) find it — a short link has no local copy yet on a
     // brand-new device even though validateToken() just resolved it fine.
     const _s=getTokStore();_s[tokId]=tok;saveTokStore(_s);
-    lockToken(tokId);S.tokenId=tokId;
+    lockToken(tokId);S.tokenId=tokId;S.inPersonMode=false;
     const info=discLabelInfo(tok.discKey);
     if(!info)return showTokenError('Invalid discipline. Contact HR.');
-    const drawn=await startExamRemote(tokId);
-    if(!drawn||drawn.length<1)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
-    S.qs=drawn;
+    const started=await startExamRemote(tokId);
+    if(!started)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
+    S.qs=started.questions;
     S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
     S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
-    S.answers={};S.skipped={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
-    populateIntro();goto('s-cam-gate');
+    if(isResume){
+      S.answers=started.answers||{};S.skipped=started.skipped||{};
+      S._resumeSecsLeft=started.remainingSecs;
+    }else{
+      S.answers={};S.skipped={};S.curQ=0;S._resumeSecsLeft=null;
+    }
+    S.blurCount=0;S.forensics=[];S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
+    populateIntro();setCamGateCopy(isResume);goto('s-cam-gate');
   }catch(e){
     console.error('V3: token init failed:',e);
     showTokenError('Something went wrong opening this link. Reopen it, or contact HR if the problem continues.');
@@ -4232,31 +4307,86 @@ function showTokenError(msg){
     <p style="font-size:.78rem;color:rgba(232,226,214,.4);margin-top:16px">Contact your HR representative for a new access link.</p>
   </div></div>`;
 }
+// Called right before goto('s-cam-gate') so the screen already reads
+// correctly the instant it appears — not just after the candidate grants
+// camera access (see activateCamGate() below for the button text/action).
+function setCamGateCopy(isResume){
+  if($('cg-title'))$('cg-title').textContent=isResume?'Verify Your Identity to Resume':'Activate Proctoring';
+  if($('cg-desc'))$('cg-desc').textContent=isResume
+    ?'Your session was interrupted. Re-verify your camera and microphone to resume the exam exactly where you left off — your answers and time remaining are unaffected.'
+    :'This examination requires your camera and microphone throughout the session. You cannot proceed without camera access.';
+}
 async function activateCamGate(){
   try{
     S.camStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});
     S.camReady=true;
     const v=$('cg-video');if(v){v.srcObject=S.camStream;v.style.display='block';}
     $('cg-status').textContent='✓ Camera & microphone active';
-    $('cg-btn').textContent='Proceed to Exam Briefing →';
+    // Resuming after a reload (S._resumeSecsLeft set by initTokenMode()/
+    // tryResumeInPersonSession()) skips the briefing screen entirely —
+    // the candidate already saw it before the reload — and goes straight
+    // back into the exam at the server's real remaining time.
+    const isResume=S._resumeSecsLeft!=null;
+    $('cg-btn').textContent=isResume?'Resume Exam →':'Proceed to Exam Briefing →';
     $('cg-btn').onclick=()=>{
       const pv=$('pip-video');if(pv)pv.srcObject=S.camStream;
-      goto('s-intro');
+      if(isResume){const secs=S._resumeSecsLeft;S._resumeSecsLeft=null;startExam(secs);}
+      else goto('s-intro');
     };
     hideErr('cg-err');
   }catch(e){showErr('cg-err','Camera denied — allow access in browser settings.');}
 }
 
-/* ═══ SAVE / CLEAR STATE ══════════════════════════════ */
-function saveState(){
-  try{localStorage.setItem('v3_exam',JSON.stringify({
-    name:S.name,email:S.email,discKey:S.discKey,discipline:S.discipline,
-    division:S.division,seniority:S.seniority,position:S.position,
-    answers:S.answers,skipped:S.skipped,secsLeft:S.secsLeft,
-    blurCount:S.blurCount,forensics:S.forensics,startTs:S.startTs,curQ:S.curQ,
-  }));}catch(e){}
+/* ═══ IN-PERSON RESUME ═════════════════════════════════
+   Test Taker (in-person) sessions have no ?token= URL to detect a reload
+   by, unlike the online candidate-link flow — launchSession() leaves a
+   marker in localStorage instead (see there), and this checks for it at
+   boot. Mirrors initTokenMode()'s resume branch: re-verify via the camera
+   gate, then continue with the same question set/answers and the server's
+   real remaining time, never a fresh clock or a lost exam. */
+async function tryResumeInPersonSession(){
+  const tokId=localStorage.getItem('v3_inperson_token');
+  if(!tokId)return;
+  // goto('s-boot') below actively strips .on from every screen including
+  // s-role (see goto()) — removing the tok-boot html class alone only
+  // undoes the CSS override, it doesn't bring s-role's .on back. Both
+  // fallbacks below must explicitly goto('s-role') for the same reason,
+  // not just tidy up the class.
+  const backToRoleScreen=()=>{
+    document.documentElement.classList.remove('tok-boot');
+    goto('s-role');
+  };
+  // Genuinely invalid/stale marker (revoked, deleted, already completed
+  // elsewhere) — forget it so it stops being offered on future reloads.
+  const abandon=()=>{
+    try{localStorage.removeItem('v3_inperson_token');}catch(e){}
+    backToRoleScreen();
+  };
+  try{
+    const result=await validateToken(tokId);
+    if(!result||result.err||result.tok.status!=='inprogress')return abandon();
+    const tok=result.tok;
+    const info=discLabelInfo(tok.discKey);
+    if(!info)return abandon();
+    goto('s-boot');
+    const started=await startExamRemote(tokId);
+    // Offline/unreachable — this could still be a perfectly valid session,
+    // so the marker deliberately stays (next reload retries) rather than
+    // being treated as abandoned.
+    if(!started)return backToRoleScreen();
+    S.tokenId=tokId;S.inPersonMode=true;
+    S.qs=started.questions;
+    S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
+    S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
+    S.answers=started.answers||{};S.skipped=started.skipped||{};
+    S.blurCount=0;S.forensics=[];S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
+    S._resumeSecsLeft=started.remainingSecs;
+    populateIntro();setCamGateCopy(true);goto('s-cam-gate');
+  }catch(e){
+    console.error('V3: in-person resume failed:',e);
+    abandon();
+  }
 }
-function clearState(){try{localStorage.removeItem('v3_exam');}catch(e){}}
 
 /* ═══ INIT ═══════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', async ()=>{
@@ -4281,6 +4411,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   renderDivCards();
   refreshAllDiscSelects();
   if(getTokenFromURL()) await initTokenMode();
+  else if(localStorage.getItem('v3_inperson_token')) await tryResumeInPersonSession();
   else restoreStaffSession();
   setTimeout(updateEpDisplay, 500);
 });
