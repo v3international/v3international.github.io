@@ -284,6 +284,12 @@ body:not(.light) .tp-fld select option{background:#0d1625;color:#E8E2D6}
 .bulk-link-txt{font-family:var(--mono);font-size:.65rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--bd-txt)}
 .bulk-copy-btn{padding:3px 8px;border-radius:5px;font-size:.65rem;font-weight:700;cursor:pointer;border:1px solid rgba(201,168,76,.35);background:rgba(201,168,76,.1);color:var(--lbl);white-space:nowrap;flex-shrink:0}
 .bulk-copy-btn:hover{background:rgba(201,168,76,.2)}
+.bulk-send-btn{padding:3px 8px;border-radius:5px;font-size:.65rem;font-weight:700;cursor:pointer;border:1px solid rgba(74,140,201,.4);background:rgba(74,140,201,.12);color:#5b9fd9;white-space:nowrap;flex-shrink:0}
+.bulk-send-btn:hover{background:rgba(74,140,201,.22)}
+.bulk-send-btn:disabled{opacity:.6;cursor:default}
+.bulk-send-status{font-size:.65rem;font-weight:700;white-space:nowrap;flex-shrink:0;min-width:44px}
+.bulk-send-status.ok{color:var(--ok,#1a6b3c)}
+.bulk-send-status.fail{color:var(--fail,#8B2020)}
 /* Filter bar */
 .filter-bar{
   background:var(--surface);border:1px solid var(--card-br);
@@ -1250,6 +1256,7 @@ body.light .modal{background:#fff}
         <div class="panel-body">
           <div class="tp-fld"><label>Candidate Name *</label><input id="tp-name" type="text" placeholder="Full name"></div>
           <div class="tp-fld"><label>Email *</label><input id="tp-email" type="email" placeholder="candidate@example.com"></div>
+          <div class="tp-fld"><label>CC on Send (optional)</label><input id="tp-cc" type="email" placeholder="you@v3international.com" oninput="try{localStorage.setItem('v3_tp_cc',this.value.trim())}catch(e){}"></div>
           <div class="tp-fld"><label>Phone</label><input id="tp-phone" type="tel" placeholder="+966 5X XXX XXXX"></div>
           <div class="tp-fld"><label>Position Applied For</label><input id="tp-pos" type="text" placeholder="e.g. Senior HSE Engineer"></div>
           <div class="tp-fld"><label>Discipline *</label><select id="tp-disc">
@@ -3086,6 +3093,7 @@ async function generateBulkTokens(){
   if(btn){btn.disabled=true;}
   const links=[];
   let failedSyncs=0;
+  const info=discLabelInfo(discKey);
   // Sequential, not parallel — every link is saved into one shared file on
   // Apps Script, so concurrent writes could clobber each other.
   for(let i=0;i<qty;i++){
@@ -3094,22 +3102,63 @@ async function generateBulkTokens(){
     const {id,synced}=await createToken({name:cname,email,phone,position:pos,discKey,seniority:_tpSen,expiryHrs,
       issuedBy:sessionStorage.getItem('v3_hr_name')||'HR/Operator'});
     if(!synced)failedSyncs++;
-    links.push({id,url:`${base}?token=${id}`,name:cname});
+    // Kept alongside the id (not re-read from the form at Send-click time)
+    // so Send still works correctly even if the operator has since changed
+    // the form to prep a different candidate's link.
+    links.push({id,url:`${base}?token=${id}`,name:cname,email,position:pos,
+      discipline:info?.discipline||discKey,division:info?.division||'',
+      seniority:_tpSen,expiryHrs});
   }
   if(btn){btn.disabled=false;btn.textContent='Generate Links →';}
   renderBulkLinks(links);
   await refreshDashboard();
   if(failedSyncs)showToast(`⚠️ ${failedSyncs} link(s) didn't sync to Apps Script — they'll only work on this device until you're back online. Use ☁ Force Push or regenerate once connected.`,'warn');
 }
+// Keyed by token id so sendCandidateEmail() (called later, from an onclick)
+// can look up that link's own candidate details rather than re-reading
+// whatever the form currently holds.
+let _bulkLinkMeta={};
 function renderBulkLinks(links){
   const el=$('bulk-links');if(!el)return;
+  links.forEach(l=>{_bulkLinkMeta[l.id]=l;});
   el.innerHTML=links.map(l=>`
     <div class="bulk-link-item">
       <span class="bulk-link-name">${escH(l.name)}</span>
       <span class="bulk-link-txt">${l.url}</span>
       <button class="bulk-copy-btn" onclick="copyText('${l.url}')">Copy</button>
+      <button class="bulk-send-btn" id="send-btn-${l.id}" onclick="sendCandidateEmail('${l.id}')">✉ Send</button>
+      <span class="bulk-send-status" id="send-status-${l.id}"></span>
     </div>`).join('');
   el.classList.add('on');
+}
+// Emails the candidate their unique link + standard instructions via
+// Code.gs (MailApp, sent from the connected Google account) — an
+// alternative to copying the link and sending it manually. CC (optional,
+// from #tp-cc) is included on the same email so whoever's cc'd sees proof
+// it went out; if the send fails outright, handleSendCandidateEmail on the
+// backend still tries to notify that same cc address separately, since a
+// failed send obviously never reached anyone via the normal copy.
+async function sendCandidateEmail(id){
+  const meta=_bulkLinkMeta[id];if(!meta)return;
+  const btn=$('send-btn-'+id),status=$('send-status-'+id);
+  const cc=$('tp-cc')?.value.trim()||'';
+  if(btn){btn.disabled=true;btn.textContent='Sending…';}
+  if(status){status.textContent='';status.className='bulk-send-status';}
+  const resp=await gsPost({
+    action:'send_candidate_email',
+    to:meta.email,cc,name:meta.name,position:meta.position,
+    discipline:meta.discipline,division:meta.division,seniority:meta.seniority,
+    link:meta.url,expiryHrs:meta.expiryHrs,
+    issuedBy:sessionStorage.getItem('v3_hr_name')||'HR/Operator'
+  });
+  if(btn){btn.disabled=false;btn.textContent='✉ Send';}
+  if(resp?.ok){
+    if(status){status.textContent='✓ Sent';status.classList.add('ok');}
+    showToast('Email sent to '+meta.email,'ok');
+  }else{
+    if(status){status.textContent='✗ Failed';status.classList.add('fail');}
+    showToast('Could not send email'+(cc?' (cc was notified)':'')+' — copy the link instead.','warn');
+  }
 }
 function copyText(text){navigator.clipboard.writeText(text).then(()=>showToast('Copied!','ok'));}
 function copyAllLinks(){
@@ -4390,6 +4439,9 @@ async function tryResumeInPersonSession(){
 
 /* ═══ INIT ═══════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', async ()=>{
+  // Remember the last CC address an operator used on the token generator —
+  // it's almost always the same HR inbox every time.
+  try{const savedCc=localStorage.getItem('v3_tp_cc');if(savedCc&&$('tp-cc'))$('tp-cc').value=savedCc;}catch(e){}
   // Restore a Master-entered GS URL from localStorage, but only if it's a
   // normal public deployment (https://script.google.com/macros/s/...). A
   // domain-restricted deployment URL (.../a/<domain>/macros/s/...) can
