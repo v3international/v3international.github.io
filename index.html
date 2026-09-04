@@ -386,9 +386,11 @@ body.light .disc-chip.on{color:#7a4e00;border-color:#9a6e08;background:rgba(154,
 .rules{list-style:none;display:flex;flex-direction:column;gap:8px;margin:18px 0}
 .rules li{display:flex;gap:9px;align-items:flex-start;font-size:.87rem;line-height:1.55;color:var(--bd-txt)}
 .rules li::before{content:"▸";color:var(--gold);flex-shrink:0;margin-top:1px}
-.rules-warn{background:rgba(139,32,32,.08);border:1.5px solid rgba(139,32,32,.3);border-radius:8px;
-  padding:12px 14px;margin:14px 0 4px;font-size:.85rem;line-height:1.6;color:var(--bd-txt)}
+.rules-check li::before{content:"✔";color:var(--gold);font-weight:700}
 .intro-actions{display:flex;justify-content:flex-end;margin-top:22px}
+.confirm-row{margin-top:18px;padding-top:14px;border-top:1px solid var(--card-br)}
+.confirm-check{display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:.84rem;line-height:1.55;color:var(--bd-txt)}
+.confirm-check input[type="checkbox"]{flex-shrink:0;width:17px;height:17px;margin-top:2px;accent-color:var(--gold);cursor:pointer}
 
 /* ═══ EXAM ══════════════════════════════════════════════════ */
 #s-exam{background:var(--sand)}
@@ -1541,7 +1543,7 @@ body.light .modal{background:#fff}
       <span class="badge">Technical Screening · Confidential · V3 ME</span>
       <h2>Welcome, <em class="intro-name" id="intro-name"></em></h2>
       <p style="font-size:.88rem;line-height:1.7;margin-bottom:4px;color:var(--bd-txt)">
-        You are about to begin the V3 Middle East Technical Screening Examination. Read all instructions carefully before proceeding.
+        You are about to begin your technical screening assessment for the <strong id="intro-position"></strong> role. This is a timed, proctored examination. Please review the briefing below in full — once you check the confirmation box and click Start Examination, your timer begins immediately and cannot be paused.
       </p>
       <div class="meta-grid">
         <div class="meta-cell"><div class="meta-k">Discipline</div><div class="meta-v" id="m-disc"></div></div>
@@ -1553,31 +1555,49 @@ body.light .modal{background:#fff}
         <div class="meta-cell"><div class="meta-k">Position</div><div class="meta-v" id="m-pos"></div></div>
         <div class="meta-cell"><div class="meta-k">Session Mode</div><div class="meta-v">Proctored · Recorded</div></div>
       </div>
-      <div class="rules-warn">
-        ⚠️ This exam runs in <strong>fullscreen</strong> and is strictly proctored. Read every rule below before you click Start.
+
+      <div class="meta-k" style="margin-top:6px">Before You Begin</div>
+      <ul class="rules rules-check">
+        <li>Sit alone in a quiet, private room</li>
+        <li>Ensure your internet connection is stable</li>
+        <li>Set aside sufficient uninterrupted time — the exam cannot be paused or resumed</li>
+      </ul>
+
+      <div class="meta-k" style="margin-top:14px">Proctoring &amp; Integrity</div>
+      <p style="font-size:.87rem;line-height:1.6;color:var(--bd-txt);margin:8px 0">
+        Your camera and microphone will be active and recorded for the duration of the exam — no exceptions. The system automatically monitors and logs the following:
+      </p>
+      <ul class="rules">
+        <li>Exiting fullscreen mode</li>
+        <li>Switching tabs or applications</li>
+        <li>Background voices or audio</li>
+        <li>Multiple or unidentified faces in frame</li>
+      </ul>
+      <p style="font-size:.87rem;line-height:1.6;color:var(--bd-txt);margin:8px 0">
+        All violations are compiled into a proctoring report and submitted to HR alongside your results.
+      </p>
+
+      <div class="meta-k" style="margin-top:14px">During the Exam</div>
+      <ul class="rules">
+        <li>The timer begins the moment you click <strong>Start</strong> and cannot be paused</li>
+        <li>Navigate between questions freely using the tracker or Prev / Next buttons</li>
+        <li>Review all responses carefully before submitting — answers cannot be changed after submission</li>
+      </ul>
+
+      <div class="meta-k" style="margin-top:14px">After Submission</div>
+      <p style="font-size:.87rem;line-height:1.6;color:var(--bd-txt);margin:8px 0 0">
+        Your score, video recording, and proctoring report are delivered automatically to HR. A member of the team will contact you regarding the outcome.
+      </p>
+
+      <div class="confirm-row">
+        <label class="confirm-check">
+          <input type="checkbox" id="intro-confirm" onchange="$('start-exam-btn').disabled=!this.checked">
+          <span>By proceeding, you confirm that you are the registered candidate and that you will complete this examination with full integrity.</span>
+        </label>
       </div>
 
-      <div class="meta-k" style="margin-top:6px">Proctoring — throughout the exam</div>
-      <ul class="rules">
-        <li>Your camera and microphone stay on and this session is recorded for the entire exam, with no exceptions.</li>
-        <li>Clicking <strong>Start Examination</strong> puts your browser into fullscreen. Stay in fullscreen until you submit.</li>
-        <li>Do not switch tabs, switch to another program, minimise the window, or exit fullscreen — each one is logged as a violation, with a warning shown on screen every time it happens.</li>
-        <li>Violations do not stop your exam. They are recorded and flagged in your report for HR to review after you finish.</li>
-      </ul>
-
-      <div class="meta-k" style="margin-top:14px">Taking the exam</div>
-      <ul class="rules">
-        <li>The 30-minute timer starts the moment you click <strong>Start Examination</strong> and cannot be paused.</li>
-        <li>Navigate freely between questions using the tracker or the Prev / Next buttons before you submit.</li>
-      </ul>
-
-      <div class="meta-k" style="margin-top:14px">After you submit</div>
-      <ul class="rules">
-        <li>Your result, video, and full report go directly to HR once you submit — there is nothing further for you to do after that.</li>
-      </ul>
-
       <div class="intro-actions">
-        <button class="btn btn-gold" onclick="startExam()">Start Examination →</button>
+        <button class="btn btn-gold" id="start-exam-btn" onclick="startExam()" disabled>I Understand — Start Examination →</button>
       </div>
     </div>
   </div>
@@ -3304,11 +3324,17 @@ async function launchSession(){
 }
 function populateIntro(){
   if($('intro-name'))$('intro-name').textContent=S.name;
+  if($('intro-position'))$('intro-position').textContent=S.position||'advertised';
   if($('m-disc'))$('m-disc').textContent=S.discipline;
   if($('m-div'))$('m-div').textContent=S.division;
   if($('m-level'))$('m-level').textContent=S.seniority==='entry'?'Entry (0–5 yrs)':'Senior (5+ yrs)';
   if($('m-pos'))$('m-pos').textContent=S.position;
   if($('intro-tag'))$('intro-tag').textContent=S.discipline+' · '+(S.seniority.charAt(0).toUpperCase()+S.seniority.slice(1));
+  // Require a fresh acknowledgment every time this briefing is shown —
+  // the confirmation checkbox gates the Start button (see the onchange
+  // handler on #intro-confirm), so both must be reset together here.
+  if($('intro-confirm'))$('intro-confirm').checked=false;
+  if($('start-exam-btn'))$('start-exam-btn').disabled=true;
   // These used to be hardcoded as "20 MCQ" / "70% (14/20)" regardless of
   // the actual configured exam length/pass mark — misleading if either
   // is ever changed from its default.
