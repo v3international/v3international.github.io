@@ -2790,25 +2790,36 @@ function renderMasterTokTable(toks){
       <td style="font-family:var(--mono);font-size:.65rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
       <td style="font-size:.78rem;color:var(--txt)">${escH(t.issuedBy||'—')}</td>
       <td>
-        ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');masterRefreshTokens()">Revoke</button>`:'—'}
+        ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}').then(masterRefreshTokens)">Revoke</button>`:'—'}
       </td>
       <td>
-        ${canDelete?`<button class="btn btn-xs" style="background:rgba(139,32,32,.18);color:var(--fail);border:1px solid rgba(139,32,32,.3)" onclick="deleteToken('${t.id}');masterRefreshTokens()">Delete</button>`:'—'}
+        ${canDelete?`<button class="btn btn-xs" style="background:rgba(139,32,32,.18);color:var(--fail);border:1px solid rgba(139,32,32,.3)" onclick="deleteToken('${t.id}').then(masterRefreshTokens)">Delete</button>`:'—'}
         <button class="btn btn-xs btn-ghost" style="margin-left:4px" onclick="copyText('${url}')">Copy</button>
         ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px;display:block" onclick="openSheetRow('${escH(t.email||'')}')">📊 Open in Sheet</button>`:''}
       </td>
     </tr>`;
   }).join('');
 }
-function deleteToken(id){
+async function deleteToken(id){
   const s=getTokStore();if(s[id]){s[id].status='deleted';}saveTokStore(s);
-  if(s[id]) pushTokenRemote(s[id]);
+  if(s[id]) await pushTokenRemote(s[id]);
 }
-function deleteBulkRevoked(){
+// Actually removes revoked/used tokens from the server's token index (and
+// their exam-data files), not just this browser's local cache. It used to
+// only delete locally — the entries still fully existed remotely, so the
+// very next refresh (here or anywhere else) pulled them straight back in,
+// making "Purge" look like it did nothing at all.
+async function deleteBulkRevoked(){
   if(!confirm('Are you sure you want to permanently delete these token logs? This cannot be undone.'))return;
   const s=getTokStore();
-  Object.keys(s).forEach(id=>{if(s[id].status==='revoked'||s[id].status==='used')delete s[id];});
-  saveTokStore(s);masterRefreshTokens();showToast('Completed & revoked tokens deleted.','ok');
+  const ids=Object.keys(s).filter(id=>s[id].status==='revoked'||s[id].status==='used');
+  if(!ids.length){showToast('Nothing to purge.','ok');return;}
+  const purged=await purgeTokensRemote(ids);
+  if(!purged){showToast('⚠️ Could not reach the server to purge — nothing was deleted. Check your connection and try again.','warn');return;}
+  ids.forEach(id=>delete s[id]);
+  saveTokStore(s);
+  await masterRefreshTokens();
+  showToast('Completed & revoked tokens deleted.','ok');
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -2873,6 +2884,14 @@ async function pushTokenRemote(tok){
   if(!tok||!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return false;
   const {_snap,...slim}=tok; // exam snapshot stays local — only status/id sync remotely
   const resp=await gsPost({action:'save_token',token:slim});
+  return !!resp?.ok;
+}
+// Actually removes tokens from the server's index (Code.gs v8.11+,
+// handlePurgeTokens) — unlike pushTokenRemote/save_token, which can only
+// ever merge fields onto an existing record, never remove one.
+async function purgeTokensRemote(ids){
+  if(!ids||!ids.length||!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return false;
+  const resp=await gsPost({action:'purge_tokens',ids});
   return !!resp?.ok;
 }
 async function fetchTokenRemote(id){
@@ -3078,9 +3097,17 @@ function reportGoBack(){
   goto(_reportReturnScreen || 's-role');
 }
 
-function revokeToken(id){
-  const s=getTokStore();if(s[id])s[id].status='revoked';saveTokStore(s);refreshDashboard();
-  if(s[id]) pushTokenRemote(s[id]);
+// Async, and awaits the remote push BEFORE returning — every caller then
+// chains its refresh off this promise (e.g. revokeToken(id).then(refresh))
+// instead of firing the refresh in parallel. Previously this refreshed
+// the dashboard FIRST and fired the remote save after, so a refresh
+// (here or triggered again moments later) could read the token index
+// before this revoke's own write had landed on the server, overwrite the
+// local revoke with that stale "active" copy, and make the revoke look
+// like it silently undid itself.
+async function revokeToken(id){
+  const s=getTokStore();if(s[id])s[id].status='revoked';saveTokStore(s);
+  if(s[id]) await pushTokenRemote(s[id]);
 }
 
 /* Operator token gen */
@@ -3202,7 +3229,7 @@ function renderTokLog(toks){
       <td style="font-family:var(--mono);font-size:.66rem;color:var(--muted)">${t.id.slice(0,12)}…</td>
       <td style="color:var(--txt)">${escH(t.issuedBy||'—')}</td>
       <td>
-        ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}');refreshDashboard()">Revoke</button>`:''}
+        ${canRevoke?`<button class="btn btn-xs btn-danger" onclick="revokeToken('${t.id}').then(refreshDashboard)">Revoke</button>`:''}
         ${t.status==='used'?`<button class="btn btn-xs btn-ghost" style="margin-top:3px" onclick="openSheetRow('${escH(t.email||'')}')">📊 Open in Sheet</button>`:''}
         ${!canRevoke&&t.status!=='used'?'—':''}
       </td>
