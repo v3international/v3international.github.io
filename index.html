@@ -224,6 +224,8 @@ body.light .err{color:#c0392b}
 .qb-correct-btn{width:24px;height:24px;border-radius:50%;border:2px solid var(--card-br);background:none;cursor:pointer;flex-shrink:0;transition:all .18s;font-size:.7rem;display:flex;align-items:center;justify-content:center;color:var(--bd-txt)}
 .qb-correct-btn.on{background:var(--ok);border-color:var(--ok);color:#fff}
 .qb-correct-btn:not(.on):hover{border-color:var(--gold);color:var(--gold)}
+.qb-tag-sel{padding:2px 6px;border-radius:6px;border:1.5px solid var(--card-br);background:var(--surface);color:var(--bd-txt);font-size:.68rem;font-weight:700;cursor:pointer;outline:none}
+.qb-tag-sel:focus{border-color:var(--gold)}
 /* Cred editor */
 .cred-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:end;padding:12px;border-radius:8px;border:1px solid var(--card-br);background:var(--surface);margin-bottom:8px}
 .cred-label{font-family:var(--mono);font-size:.62rem;letter-spacing:.16em;text-transform:uppercase;color:var(--lbl);white-space:nowrap;padding-bottom:9px;font-weight:700}
@@ -443,6 +445,8 @@ body:not(.light) .qcard{background:rgba(255,255,255,.04);border-color:rgba(201,1
 .justify-box{width:100%;min-height:64px;resize:vertical;padding:11px 14px;border-radius:10px;border:2px solid var(--border);background:var(--surface);color:var(--txt);font-family:var(--body);font-size:.84rem;line-height:1.5}
 body.light .justify-box{background:var(--sand-d)}
 .justify-box:focus{outline:none;border-color:rgba(201,168,76,.6)}
+.justify-req{font-weight:700;color:var(--fail,#c43838);text-transform:none;letter-spacing:0}
+.justify-box.justify-missing{border-color:var(--fail,#c43838)}
 .opt{
   display:flex;align-items:flex-start;gap:13px;padding:13px 16px;
   border-radius:10px;cursor:pointer;width:100%;font-family:var(--body);
@@ -2556,7 +2560,11 @@ function qbSetCorrect(key,pool,i,j){
 }
 function qbSetType(key,pool,i,type){
   const p=getPool(key,pool);
-  if(p&&p[i]){p[i].type=type;renderQBForDisc(key,pool);}
+  if(p&&p[i]){p[i].type=type;}
+}
+function qbSetDifficulty(key,pool,i,difficulty){
+  const p=getPool(key,pool);
+  if(p&&p[i]){p[i].difficulty=difficulty;}
 }
 function qbMoveUp(key,pool,i){
   const p=getPool(key,pool);
@@ -2642,7 +2650,12 @@ function renderQBForDisc(key, pool){
        <span>${p.length} question${p.length!==1?'s':''}</span>
      </div>` +
     p.map((q,i) => {
-      const qtype  = q.type||'F';
+      const difficulty = q.difficulty || 'simple';
+      const qtype = q.type || 'theoretical';
+      const DIFF_OPTS = [['simple','Simple'],['moderate','Moderate'],['hard','Hard']];
+      const TYPE_OPTS = [['theoretical','Theoretical'],['applied','Applied'],['practical','Practical'],['scenario','Scenario-based']];
+      const diffSelHtml = DIFF_OPTS.map(([v,l])=>`<option value="${v}"${difficulty===v?' selected':''}>${l}</option>`).join('');
+      const typeSelHtml = TYPE_OPTS.map(([v,l])=>`<option value="${v}"${qtype===v?' selected':''}>${l}</option>`).join('');
       const optsHtml = (q.opts||[]).map((opt,j)=>`
         <div class="qb-opt-row">
           <button class="qb-correct-btn${q.ans===j?' on':''}"
@@ -2662,19 +2675,13 @@ function renderQBForDisc(key, pool){
             <span class="drag-handle" title="Drag to reorder"
               style="cursor:grab;font-size:1rem;color:var(--muted);user-select:none;padding:0 4px">☰</span>
             <span class="qb-q-num">Q${i+1}<span style="font-size:.55rem;opacity:.5"> of ${p.length}</span></span>
-            <!-- Type toggle -->
-            <div style="display:flex;border:1.5px solid var(--card-br);border-radius:6px;overflow:hidden;font-size:.68rem">
-              <button onclick="qbSetType('${key}','${pool}',${i},'F')"
-                style="padding:2px 8px;border:none;cursor:pointer;font-weight:700;
-                  background:${qtype==='F'?'#0A1628':'transparent'};
-                  color:${qtype==='F'?'#C9A84C':'var(--muted)'}">
-                📚 Foundational</button>
-              <button onclick="qbSetType('${key}','${pool}',${i},'P')"
-                style="padding:2px 8px;border:none;cursor:pointer;font-weight:700;
-                  background:${qtype==='P'?'#1a6b3c':'transparent'};
-                  color:${qtype==='P'?'#fff':'var(--muted)'}">
-                🔧 Practical</button>
-            </div>
+            <!-- Difficulty + Type selectors. Admin-only — never shown to a
+                 candidate during the exam; used for the report card's
+                 performance-by-difficulty/-type breakdown after grading. -->
+            <select class="qb-tag-sel" title="Difficulty"
+              onchange="qbSetDifficulty('${key}','${pool}',${i},this.value)">${diffSelHtml}</select>
+            <select class="qb-tag-sel" title="Question type"
+              onchange="qbSetType('${key}','${pool}',${i},this.value)">${typeSelHtml}</select>
           </div>
           <div style="display:flex;gap:6px;align-items:center">
             <!-- Move up/down -->
@@ -2711,7 +2718,7 @@ function addQ(key,pool){
   if(!key||!pool)return showToast('Select a discipline first.','warn');
   const p=getPool(key,pool);
   if(p===null)return showToast('Discipline not found.','warn');
-  p.push({q:'New question text?',opts:['Option A','Option B','Option C','Option D'],ans:0});
+  p.push({q:'New question text?',opts:['Option A','Option B','Option C','Option D'],ans:0,difficulty:'simple',type:'theoretical'});
   renderQBForDisc(key,pool);
   setTimeout(()=>{const el=$('qb-editor-body');if(el)el.scrollTop=el.scrollHeight;},120);
   showToast('Question added — fill in text, options, and mark the correct answer.','ok');
@@ -3626,10 +3633,7 @@ function renderQ(idx){
       <div class="qcard-meta">Q${idx+1} / ${S.qs.length} &nbsp;·&nbsp; ${escH(S.discipline)} &nbsp;·&nbsp; ${S.seniority.toUpperCase()}</div>
       <div class="qcard-text">${escH(q.q)}</div>
       <div class="opts">${optsHtml}</div>
-      <div class="justify-wrap">
-        <label class="justify-lbl" for="justify-box">Briefly justify your answer <span class="justify-opt">(optional)</span></label>
-        <textarea id="justify-box" class="justify-box" placeholder="In a sentence or two, why is this the correct answer?" oninput="setJustification(${idx},this.value)">${escH(S.justifications[idx]||'')}</textarea>
-      </div>
+      ${renderJustifyBox(idx)}
     </div>`;
   const _isLast=idx===S.qs.length-1;
   if($('nav-prev')){$('nav-prev').disabled=(idx===0);}
@@ -3640,11 +3644,59 @@ function renderQ(idx){
 }
 function pickAns(qi,oi){S.answers[qi]=oi;delete S.skipped[qi];renderQ(S.curQ);syncAnswerRemote();}
 // Free-text "why did you pick this" field, kept per-question alongside
-// S.answers. Optional and never auto-graded — it rides along in the
-// synced exam data and the final submission JSON purely as supporting
-// context for a human reviewer, the same way the video/forensic log are.
+// S.answers. Never auto-graded — it rides along in the synced exam data
+// and the final submission JSON purely as supporting context for a human
+// reviewer, the same way the video/forensic log are. Optional on most
+// questions, but see isJustificationRequired() below.
 function setJustification(qi,val){S.justifications[qi]=val;syncAnswerRemote();}
-function navQ(dir){const n=S.curQ+dir;if(n>=0&&n<S.qs.length)renderQ(n);}
+// Mandatory only once an answer has actually been given (nothing to
+// justify before that) AND either: the candidate picked the "None of the
+// above" option on this question, or the question itself is tagged both
+// hard difficulty and scenario-based — the two cases where a bare pick
+// tells a reviewer the least about whether the candidate actually
+// reasoned it through.
+function isJustificationRequired(qi){
+  const q=S.qs&&S.qs[qi];if(!q)return false;
+  const ans=S.answers[qi];if(ans===undefined)return false;
+  const pickedText=String(q.opts[ans]||'').trim().toLowerCase();
+  if(pickedText.startsWith('none of the above'))return true;
+  if((q.difficulty||'').toLowerCase()==='hard' && (q.type||'').toLowerCase()==='scenario')return true;
+  return false;
+}
+function renderJustifyBox(idx){
+  const required=isJustificationRequired(idx);
+  const val=S.justifications[idx]||'';
+  return `<div class="justify-wrap">
+    <label class="justify-lbl" for="justify-box">Briefly justify your answer ${required
+      ?'<span class="justify-req">(required)</span>'
+      :'<span class="justify-opt">(optional)</span>'}</label>
+    <textarea id="justify-box" class="justify-box${required&&!val.trim()?' justify-missing':''}"
+      placeholder="In a sentence or two, why is this the correct answer?"
+      oninput="setJustification(${idx},this.value)">${escH(val)}</textarea>
+  </div>`;
+}
+function navQ(dir){
+  const n=S.curQ+dir;if(n<0||n>=S.qs.length)return;
+  // Only block moving FORWARD off a question whose justification is
+  // required and still blank — going back is always allowed.
+  if(dir>0 && isJustificationRequired(S.curQ) && !(S.justifications[S.curQ]||'').trim()){
+    renderQ(S.curQ); // re-render to show the red required-missing state
+    $('justify-box')?.focus();
+    return showToast('This question needs a short justification before you can continue.','warn');
+  }
+  renderQ(n);
+}
+// Scans every answered question for a still-required-but-blank
+// justification. Returns the first offending question index, or -1 if
+// none. Used both by the Next-button guard above and by the Submit guard
+// below — Submit is the one place a candidate cannot route around this
+// via the tracker's jump-to-any-question links.
+function firstMissingRequiredJustification(){
+  for(let i=0;i<S.qs.length;i++){
+    if(isJustificationRequired(i) && !(S.justifications[i]||'').trim())return i;
+  }
+  return -1;
+}
 function skipQ(){S.skipped[S.curQ]=true;if(S.curQ<S.qs.length-1)renderQ(S.curQ+1);syncAnswerRemote();}
 function updateFooter(){
   const ans=Object.keys(S.answers).length,tot=S.qs.length,pct=(ans/tot)*100;
@@ -3655,6 +3707,12 @@ function updateFooter(){
 
 /* Submit */
 function confirmSubmit(){
+  const missing=firstMissingRequiredJustification();
+  if(missing!==-1){
+    renderQ(missing);
+    $('justify-box')?.focus();
+    return showToast('One or more answers still need a short justification before you can submit.','warn');
+  }
   $('confirm-cnt').textContent=Object.keys(S.answers).length;
   $('confirm-total').textContent=S.qs.length;
   $('confirm-bg').classList.add('on');
@@ -4029,6 +4087,29 @@ function buildReport(){
     </div>
     <div class="qa-real-content" style="display:none">${tableHtml}</div>`;}
 
+  // Groups S.qs by q[field] (difficulty or type) and reports correct/total
+  // per bucket — same "out of every question in the exam" convention as
+  // the Score Breakdown bars above (an unanswered question counts against
+  // its bucket, same as it counts against the overall score). Buckets
+  // with zero questions are omitted rather than shown as a misleading
+  // 0/0 row — relevant for any discipline not yet tagged with these
+  // fields, where every bucket will simply be empty.
+  function tagBreakdownHtml(field,order,labels){
+    const buckets={};
+    order.forEach(k=>buckets[k]={correct:0,total:0});
+    S.qs.forEach((q,i)=>{
+      const key=String(q[field]||'').toLowerCase();
+      if(!buckets[key])return;
+      buckets[key].total++;
+      if(S.answers[i]!==undefined && S.answers[i]===q.ans)buckets[key].correct++;
+    });
+    const rows=order.filter(k=>buckets[k].total>0).map(k=>{
+      const b=buckets[k],pct=b.total?Math.round((b.correct/b.total)*100):0;
+      return `<div class="sv-bar-row"><span class="sv-bar-lbl">${labels[k]}</span><div class="sv-bar-track"><div class="sv-bar-fill correct" style="width:${pct}%"></div></div><span class="sv-bar-pct">${b.correct}/${b.total} q &middot; ${pct}%</span></div>`;
+    }).join('');
+    return rows || '<div style="font-size:.78rem;color:#999;padding:2px 0">No tagged questions in this pool.</div>';
+  }
+
   /* PAGE 1 */
   const page1=`<div class="rpt-pg">
     ${pgHdr('Executive Summary — Page 1 of 3')}
@@ -4080,6 +4161,16 @@ function buildReport(){
         <div class="sv-bar-row"><span class="sv-bar-lbl">Wrong</span><div class="sv-bar-track"><div class="sv-bar-fill wrong" style="width:${wrongPct}%"></div></div><span class="sv-bar-pct">${wrong} q &middot; ${wrongPct}%</span></div>
         ${skipped>0?`<div class="sv-bar-row"><span class="sv-bar-lbl">Unanswered</span><div class="sv-bar-track"><div class="sv-bar-fill skip" style="width:${skipPct}%"></div></div><span class="sv-bar-pct">${skipped} q &middot; ${skipPct}%</span></div>`:''}
       </div>
+    </div>
+    <div class="r-divider"></div>
+    <div class="r-sec">
+      <div class="r-sec-lbl">Performance by Difficulty</div>
+      <div class="sv-bars">${tagBreakdownHtml('difficulty',['simple','moderate','hard'],{simple:'Simple',moderate:'Moderate',hard:'Hard'})}</div>
+    </div>
+    <div class="r-divider"></div>
+    <div class="r-sec">
+      <div class="r-sec-lbl">Performance by Question Type</div>
+      <div class="sv-bars">${tagBreakdownHtml('type',['theoretical','applied','practical','scenario'],{theoretical:'Theoretical',applied:'Applied',practical:'Practical',scenario:'Scenario-based'})}</div>
     </div>
     <div class="r-divider"></div>
     <div class="r-sec">
