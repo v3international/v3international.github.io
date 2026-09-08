@@ -2554,6 +2554,23 @@ function qbUpdateText(key,pool,i,val){
 function qbUpdateOpt(key,pool,i,j,val){
   const p=getPool(key,pool);if(p&&p[i])p[i].opts[j]=val;
 }
+// Options aren't fixed at 4 — a "None of the above" choice can be added
+// on TOP of the original options (not swapped in for one of them), which
+// keeps blind-guess odds at 1/N no matter how many real distractors a
+// question has, rather than shrinking to fewer real choices if a
+// candidate learns to disregard it.
+function qbAddOpt(key,pool,i){
+  const p=getPool(key,pool);
+  if(p&&p[i]){p[i].opts.push('New option');renderQBForDisc(key,pool);}
+}
+function qbDelOpt(key,pool,i,j){
+  const p=getPool(key,pool);
+  if(!p||!p[i]||p[i].opts.length<=2)return;
+  p[i].opts.splice(j,1);
+  if(p[i].ans===j)p[i].ans=0;
+  else if(p[i].ans>j)p[i].ans--;
+  renderQBForDisc(key,pool);
+}
 function qbSetCorrect(key,pool,i,j){
   const p=getPool(key,pool);
   if(p&&p[i]){p[i].ans=j;renderQBForDisc(key,pool);}
@@ -2656,6 +2673,7 @@ function renderQBForDisc(key, pool){
       const TYPE_OPTS = [['theoretical','Theoretical'],['applied','Applied'],['practical','Practical'],['scenario','Scenario-based']];
       const diffSelHtml = DIFF_OPTS.map(([v,l])=>`<option value="${v}"${difficulty===v?' selected':''}>${l}</option>`).join('');
       const typeSelHtml = TYPE_OPTS.map(([v,l])=>`<option value="${v}"${qtype===v?' selected':''}>${l}</option>`).join('');
+      const optCount = (q.opts||[]).length;
       const optsHtml = (q.opts||[]).map((opt,j)=>`
         <div class="qb-opt-row">
           <button class="qb-correct-btn${q.ans===j?' on':''}"
@@ -2663,6 +2681,8 @@ function renderQBForDisc(key, pool){
             title="Mark as correct">${q.ans===j?'✓':''}</button>
           <input value="${escH(opt)}"
             oninput="qbUpdateOpt('${key}','${pool}',${i},${j},this.value)">
+          <button class="btn btn-xs btn-ghost" style="padding:2px 7px;flex-shrink:0" ${optCount<=2?'disabled':''}
+            onclick="qbDelOpt('${key}','${pool}',${i},${j})" title="Remove this option">✕</button>
         </div>`).join('');
 
       return `<div class="qb-item" data-qi="${i}" draggable="true"
@@ -2703,6 +2723,8 @@ function renderQBForDisc(key, pool){
           Answer Options — click ✓ to mark correct
         </div>
         <div class="qb-opts">${optsHtml}</div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:8px"
+          onclick="qbAddOpt('${key}','${pool}',${i})">+ Add Option</button>
       </div>`;
     }).join('');
 }
@@ -3614,7 +3636,10 @@ function updateTracker(){
 }
 function renderQ(idx){
   S.curQ=idx;
-  const q=S.qs[idx],keys=['A','B','C','D'];
+  // Letters generated from however many options this question actually
+  // has (4 on most disciplines, 5 where a "None of the above" choice has
+  // been added on top of the original 4 rather than replacing one).
+  const q=S.qs[idx],keys=q.opts.map((_,k)=>String.fromCharCode(65+k));
   const sec=idx<5?'':'';
   let optsHtml='';
   q.opts.forEach((opt,j)=>{
