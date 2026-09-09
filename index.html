@@ -828,6 +828,7 @@ body.light .modal{background:#fff}
         <button class="etab" data-tab="team" onclick="editorTab('team')">👥 Team Access</button>
         <button class="etab" data-tab="style" onclick="editorTab('style')">🎨 Theme</button>
         <button class="etab" data-tab="master-toks" onclick="editorTab('master-toks')">🔗 All Tokens</button>
+        <button class="etab" data-tab="recover" onclick="editorTab('recover')">🆘 Recover Exam</button>
         <button class="etab" data-tab="pool" onclick="editorTab('pool')">🎲 Pool &amp; Draw</button>
       </div>
 
@@ -1127,6 +1128,34 @@ body.light .modal{background:#fff}
             </tbody>
           </table>
         </div>
+
+      <!-- Recover Exam Tab — added after the Mohammad Kassar incident: a
+           candidate's answers/score are saved to Drive independently of,
+           and before, the Sheet row write, so an interrupted or
+           never-fully-submitted exam is usually still recoverable. This
+           searches by name and lets Master commit a recovery without
+           touching Apps Script. -->
+      <div class="etab-content" data-tab="recover">
+        <div class="editor-card">
+          <div class="ec-hdr">
+            <div class="ec-hdr-title">🆘 Recover Exam</div>
+          </div>
+          <div class="ec-body">
+            <p style="font-size:.82rem;color:var(--muted);margin-bottom:12px;line-height:1.6">
+              Use this when a candidate says they took the exam but no result appears in the Sheet. Their answers
+              are saved continuously while they work, independently of the final submission — so even an
+              interrupted or never-fully-submitted attempt can usually still be recovered from what was saved.
+            </p>
+            <div style="display:flex;gap:8px;margin-bottom:14px">
+              <input id="recover-search-name" type="text" placeholder="Candidate name…"
+                onkeydown="if(event.key==='Enter')searchRecoverable()"
+                style="flex:1;padding:9px 12px;border-radius:var(--r-sm);border:1.5px solid var(--inp-br);background:var(--inp-bg);color:var(--inp-txt);font-size:.88rem">
+              <button class="btn btn-sm" onclick="searchRecoverable()">🔍 Search</button>
+            </div>
+            <div id="recover-results"></div>
+          </div>
+        </div>
+      </div>
 
       <!-- Pool & Draw Settings Tab -->
       <div class="etab-content" data-tab="pool">
@@ -2780,6 +2809,59 @@ async function masterRefreshTokens(){
   renderMasterTokTableFromLocal();
 }
 
+/* ── MASTER: Recover Exam ───────────────────────────────
+   Self-service front end for search_recoverable/recover_exam (Code.gs) —
+   added after a candidate's in-person exam was cut short and its Sheet
+   row never appeared. Their answers were still saved to Drive the whole
+   time; this searches for that saved data by name and lets Master commit
+   a recovered row without needing to open Apps Script. */
+async function searchRecoverable(){
+  const name=($('recover-search-name')?.value||'').trim();
+  const el=$('recover-results');
+  if(!el)return;
+  if(!name){el.innerHTML='<p style="color:var(--muted);font-size:.82rem">Enter a name to search for.</p>';return;}
+  el.innerHTML='<p style="color:var(--muted);font-size:.82rem">Searching…</p>';
+  const resp=await gsPost({action:'search_recoverable',name,currentMaster:_masterPassCache});
+  if(!resp?.ok){el.innerHTML=`<p style="color:var(--fail)">Search failed: ${escH(resp?.error||'unknown error')}</p>`;return;}
+  const results=resp.results||[];
+  if(!results.length){el.innerHTML='<p style="color:var(--muted);font-size:.82rem">No matching token found. Check the spelling, or confirm a link/session was actually created for this candidate.</p>';return;}
+  el.innerHTML=results.map(r=>{
+    const info=discLabelInfo(r.discKey);
+    const discLabel=info?`${info.discipline} · ${info.division}`:(r.discKey||'—');
+    let bodyHtml;
+    if(r.alreadyInSheet){
+      bodyHtml=`<div style="color:var(--ok);font-size:.82rem">✅ A Sheet row already exists for this email — this candidate is already recorded. No action needed.</div>`;
+    } else if(!r.hasExamData){
+      bodyHtml=`<div style="color:var(--muted);font-size:.82rem">⚠️ No exam data was ever saved for this token — the candidate never actually started this exam (or it was purged). Nothing to recover; issue a fresh link if they still need to test.</div>`;
+    } else {
+      const gradedNote=r.wasGraded?'Already graded server-side.':'Never reached Submit — score computed from whatever was synced.';
+      bodyHtml=`<div style="font-size:.82rem;margin-bottom:8px">
+          <strong>${r.answered}/${r.total}</strong> questions answered · Computed result:
+          <strong>${r.score}/${r.total} (${r.pct}%) — ${r.passed?'PASS':'FAIL'}</strong><br>
+          <span style="color:var(--muted)">${gradedNote} ${r.answered<r.total?'Unanswered questions will count as wrong, same as any normal submission.':''}</span>
+        </div>
+        <button class="btn btn-sm btn-danger" onclick="recoverExamToken('${r.tokenId}','${escH(r.name).replace(/'/g,"\\'")}')">⚠ Recover This Result Into The Sheet</button>`;
+    }
+    return `<div class="editor-card" style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px">
+          <div>
+            <div style="font-weight:700">${escH(r.name)}</div>
+            <div style="font-size:.76rem;color:var(--muted)">${escH(r.email)} · ${discLabel} · ${r.seniority==='senior'?'Senior':'Entry'} · status: ${r.status}</div>
+          </div>
+        </div>
+        ${bodyHtml}
+      </div>`;
+  }).join('');
+}
+async function recoverExamToken(tokenId,name){
+  if(!confirm(`Recover ${name}'s exam into the Sheet?\n\nThis writes a new row highlighted pale yellow so it's visibly distinct from a normal submission. It will not create a duplicate if one already exists.`))return;
+  const resp=await gsPost({action:'recover_exam',tokenId,currentMaster:_masterPassCache});
+  if(!resp?.ok){showToast('Recovery failed: '+(resp?.error||'unknown error'),'err');return;}
+  if(!resp.written){showToast(resp.reason||'Nothing written.','warn');return;}
+  showToast(`Recovered: ${resp.score}/${resp.total} (${resp.pct}%) — ${resp.passed?'PASS':'FAIL'}. Written to Sheet row ${resp.row}.`,'ok');
+  searchRecoverable(); // refresh the panel so it now shows "already in Sheet"
+}
+
 /* ── MASTER TOKEN FILTERS ─────────────────────────────── */
 function masterApplyFilters(){
   const search = ($('mf-search')?.value||'').toLowerCase().trim();
@@ -3362,6 +3444,32 @@ async function launchSession(){
   if(!_sen)return showErr('setup-err',"Select a seniority level.");
   if(!S.camReady)return showErr('setup-err',"Activate camera before launching.");
   hideErr('setup-err');
+  // Guards against silently orphaning a PREVIOUS candidate's unfinished
+  // in-person exam on this same device. v3_inperson_token is a single key
+  // — it used to get overwritten unconditionally right here the moment a
+  // new session launched, with no check on whether the old one ever
+  // actually completed. If that candidate's exam was interrupted (tab
+  // closed, device handed off, connection dropped) before it reached
+  // completeToken() — the only place that key gets cleared — their exam
+  // becomes invisible to the app from that point on: still fully saved
+  // server-side, but with nothing left on this device pointing back to
+  // it, so no one is ever offered a resume and no one finds out anything
+  // went wrong. This is exactly what happened to Mohammad Kassar's exam.
+  const priorMarker=(()=>{try{return localStorage.getItem('v3_inperson_token');}catch(e){return null;}})();
+  if(priorMarker){
+    const priorCheck=await validateToken(priorMarker);
+    const priorStillOpen=priorCheck && priorCheck.ok && priorCheck.tok && priorCheck.tok.status==='inprogress';
+    if(priorStillOpen){
+      const priorName=priorCheck.tok.name||'(unknown candidate)';
+      const proceed=confirm(
+        `⚠ An earlier exam on this device — ${priorName} — was never completed and is still marked in progress.\n\n`+
+        `Starting a new session now will make it harder to resume theirs later (an admin can still recover it from `+
+        `the Master panel's "Recover Exam" tool, but it takes an extra step instead of resuming automatically).\n\n`+
+        `Click OK to continue anyway and start ${name}'s exam, or Cancel to go deal with ${priorName}'s session first.`
+      );
+      if(!proceed)return;
+    }
+  }
   const info=discLabelInfo(_discKey);
   if(!info)return showErr('setup-err',"No question bank for this discipline.");
   const phone=$('f-phone')?.value.trim()||'';
