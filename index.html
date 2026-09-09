@@ -1720,7 +1720,7 @@ const CFG = {
   // anyone could read them via the browser's "view source". They are now
   // verified server-side by Apps Script (action=verify_pass) and stored
   // only in that script's Script Properties, never shipped to the client.
-  EXAM_SECS:   1800,
+  EXAM_SECS:   2700,      // 45 minutes — must match Code.gs's EXAM_SECS_DEFAULT
   PASS_PCT:    70,
   EXAM_Q:      20,        // questions drawn per session (max 60)
   MAX_VIOLATIONS: 3,      // proctoring violations before auto-submitting the exam
@@ -3675,17 +3675,19 @@ function pickAns(qi,oi){S.answers[qi]=oi;delete S.skipped[qi];renderQ(S.curQ);sy
 // questions, but see isJustificationRequired() below.
 function setJustification(qi,val){S.justifications[qi]=val;syncAnswerRemote();}
 // Mandatory only once an answer has actually been given (nothing to
-// justify before that) AND either: the candidate picked the "None of the
-// above" option on this question, or the question itself is tagged both
-// hard difficulty and scenario-based — the two cases where a bare pick
-// tells a reviewer the least about whether the candidate actually
-// reasoned it through.
+// justify before that) AND any of: the candidate picked the "None of the
+// above" option on this question; the question is tagged both hard
+// difficulty and scenario-based; or the question is tagged practical —
+// a bare pick on any of these tells a reviewer the least about whether
+// the candidate actually reasoned it through, versus guessed or recalled
+// a fact by rote.
 function isJustificationRequired(qi){
   const q=S.qs&&S.qs[qi];if(!q)return false;
   const ans=S.answers[qi];if(ans===undefined)return false;
   const pickedText=String(q.opts[ans]||'').trim().toLowerCase();
   if(pickedText.startsWith('none of the above'))return true;
   if((q.difficulty||'').toLowerCase()==='hard' && (q.type||'').toLowerCase()==='scenario')return true;
+  if((q.type||'').toLowerCase()==='practical')return true;
   return false;
 }
 function renderJustifyBox(idx){
@@ -3949,8 +3951,16 @@ async function submitToSheets(){
       correct: q.opts[q.ans],
       right  : S.answers[i] === q.ans,
       justification: (S.justifications[i] || '').slice(0, 500),
-
+      difficulty: q.difficulty || '',
+      type: q.type || '',
     }))),
+    // Same computeBuckets()/computeCandidateAnalysisSentences() the PDF
+    // report uses (see above buildReport()) — one calculation feeding
+    // both, so the Sheet and the PDF can never show different numbers
+    // for the same candidate.
+    difficultyBreakdown: computeBreakdownLines('difficulty', DIFF_ORDER, {simple:'Simple',moderate:'Moderate',hard:'Hard'}),
+    typeBreakdown      : computeBreakdownLines('type', TYPE_ORDER, {theoretical:'Theoretical',applied:'Applied',practical:'Practical',scenario:'Scenario-based'}),
+    candidateAnalysis  : computeCandidateAnalysisSentences().join(' '),
     forensics   : JSON.stringify(S.forensics.slice(0, 60)),
     aiFlags     : JSON.stringify((typeof AIP !== 'undefined' ? AIP.flags : []).slice(0, 40)),
   });
@@ -4045,6 +4055,102 @@ async function generateAndUploadPdf(){
 }
 
 /* ═══════════════════════════════════════════════════════
+   PERFORMANCE-BY-DIFFICULTY/TYPE — shared by the report PDF
+   (buildReport(), below) AND the Sheet row (submitToSheets()) so both
+   are always built from one calculation, never two that could drift
+   apart from each other.
+═══════════════════════════════════════════════════════ */
+const DIFF_ORDER=['simple','moderate','hard'];
+const TYPE_ORDER=['theoretical','applied','practical','scenario'];
+// Groups S.qs by q[field] (difficulty or type) and reports correct/total
+// per bucket — same "out of every question in the exam" convention as
+// the overall score (an unanswered question counts against its bucket,
+// same as it counts against the overall score).
+function computeBuckets(field,order){
+  const buckets={};
+  order.forEach(k=>buckets[k]={correct:0,total:0});
+  S.qs.forEach((q,i)=>{
+    const key=String(q[field]||'').toLowerCase();
+    if(!buckets[key])return;
+    buckets[key].total++;
+    if(S.answers[i]!==undefined && S.answers[i]===q.ans)buckets[key].correct++;
+  });
+  return buckets;
+}
+// Deterministic, rule-based narrative built from the exact bucket numbers
+// above — every claim cites an actual percentage, so nothing here can
+// silently drift from the bars/columns built on the same buckets. Not a
+// sentiment/vibe summary: it compares Simple vs Hard performance (depth
+// of understanding vs memorisation) and knowledge-type (Theoretical+
+// Applied) vs field-type (Practical+Scenario-based) performance
+// (textbook knowledge vs real judgement), then ties both to the pass/
+// fail verdict. Falls back to a plain note if this discipline isn't
+// tagged yet, rather than fabricating an analysis from nothing. Returns
+// an array of plain-text sentences — buildReport() wraps them in an
+// HTML block, submitToSheets() joins them as plain text for the Sheet.
+function computeCandidateAnalysisSentences(){
+  const diffB=computeBuckets('difficulty',DIFF_ORDER);
+  const typeB=computeBuckets('type',TYPE_ORDER);
+  const diffTagged=DIFF_ORDER.reduce((s,k)=>s+diffB[k].total,0);
+  const typeTagged=TYPE_ORDER.reduce((s,k)=>s+typeB[k].total,0);
+  if(diffTagged<4 && typeTagged<4){
+    return [`This discipline's question bank does not yet carry difficulty/type tags, so an automated performance-profile analysis is not available. The overall score (${S.score}/${S.total}, ${S.pct}%) remains fully valid and unaffected.`];
+  }
+  const pct=b=>b.total?Math.round((b.correct/b.total)*100):null;
+  const sentences=[];
+
+  const simplePct=pct(diffB.simple), modPct=pct(diffB.moderate), hardPct=pct(diffB.hard);
+  if(diffB.simple.total>0 && diffB.hard.total>0){
+    const gap=simplePct-hardPct;
+    if(gap>=25){
+      sentences.push(`Performance dropped from Simple questions (${simplePct}%) to Hard questions (${hardPct}%) — a ${gap}-point gap suggesting solid foundational recall but less consistent reasoning as questions get harder.`);
+    } else if(gap<=-10){
+      sentences.push(`The candidate performed as well or better on Hard questions (${hardPct}%) as on Simple ones (${simplePct}%) — a sign of genuine understanding rather than surface-level memorisation.`);
+    } else {
+      sentences.push(`Performance was reasonably consistent across difficulty levels (Simple ${simplePct}%${diffB.moderate.total>0?', Moderate '+modPct+'%':''}, Hard ${hardPct}%).`);
+    }
+  } else if(diffB.moderate.total>0){
+    sentences.push(`Moderate-difficulty questions were answered at ${modPct}%.`);
+  }
+
+  const knowCorrect=typeB.theoretical.correct+typeB.applied.correct;
+  const knowTotal=typeB.theoretical.total+typeB.applied.total;
+  const fieldCorrect=typeB.practical.correct+typeB.scenario.correct;
+  const fieldTotal=typeB.practical.total+typeB.scenario.total;
+  if(knowTotal>0 && fieldTotal>0){
+    const knowPct=Math.round((knowCorrect/knowTotal)*100);
+    const fieldPct=Math.round((fieldCorrect/fieldTotal)*100);
+    const gap=knowPct-fieldPct;
+    if(gap>=20){
+      sentences.push(`Knowledge-based questions (Theoretical/Applied: ${knowPct}%) scored well above practical/judgement-based questions (Practical/Scenario-based: ${fieldPct}%) — the candidate appears to know the codes and definitions but has shown less consistent field judgement in this assessment. Recommend probing real-world decision-making at interview before relying on this profile for a hands-on supervisory role.`);
+    } else if(gap<=-20){
+      sentences.push(`The candidate scored notably higher on practical/judgement-based questions (Practical/Scenario-based: ${fieldPct}%) than on knowledge-based ones (Theoretical/Applied: ${knowPct}%) — indicative of real field experience and sound on-site judgement, even where specific code references weren't always recalled precisely. Code values can be looked up on the job; this kind of judgement typically can't.`);
+    } else {
+      sentences.push(`Knowledge-based and practical/judgement-based performance were broadly balanced (Theoretical/Applied ${knowPct}% vs Practical/Scenario-based ${fieldPct}%), suggesting the candidate's textbook knowledge and field judgement are aligned.`);
+    }
+  }
+
+  if(S.passed){
+    sentences.push(hardPct!==null&&hardPct<50
+      ? `Combined with the overall result (${S.pct}%, PASS), this profile still warrants a closer look at the specific Hard/Scenario-based questions missed before final sign-off.`
+      : `Combined with the overall result (${S.pct}%, PASS), this profile supports the reading above.`);
+  } else {
+    sentences.push(`Combined with the overall result (${S.pct}%, FAIL), the weakest area(s) identified above are the most direct explanation for the shortfall, and the natural focus for any future re-assessment or targeted training.`);
+  }
+  return sentences;
+}
+// Plain "Label: correct/total (pct%)" lines for the Sheet columns — same
+// buckets, same numbers as the report's bar charts, just formatted as
+// text instead of HTML.
+function computeBreakdownLines(field,order,labels){
+  const buckets=computeBuckets(field,order);
+  return order.filter(k=>buckets[k].total>0).map(k=>{
+    const b=buckets[k],p=b.total?Math.round((b.correct/b.total)*100):0;
+    return `${labels[k]}: ${b.correct}/${b.total} (${p}%)`;
+  }).join('; ') || 'No tagged questions in this pool.';
+}
+
+/* ═══════════════════════════════════════════════════════
    2-PAGE REPORT BUILDER (NO DIFFICULTY BADGES)
 ═══════════════════════════════════════════════════════ */
 function buildReport(){
@@ -4112,27 +4218,24 @@ function buildReport(){
     </div>
     <div class="qa-real-content" style="display:none">${tableHtml}</div>`;}
 
-  // Groups S.qs by q[field] (difficulty or type) and reports correct/total
-  // per bucket — same "out of every question in the exam" convention as
-  // the Score Breakdown bars above (an unanswered question counts against
-  // its bucket, same as it counts against the overall score). Buckets
-  // with zero questions are omitted rather than shown as a misleading
-  // 0/0 row — relevant for any discipline not yet tagged with these
-  // fields, where every bucket will simply be empty.
+  // Buckets with zero questions are omitted rather than shown as a
+  // misleading 0/0 row — relevant for any discipline not yet tagged with
+  // these fields, where every bucket will simply be empty.
   function tagBreakdownHtml(field,order,labels){
-    const buckets={};
-    order.forEach(k=>buckets[k]={correct:0,total:0});
-    S.qs.forEach((q,i)=>{
-      const key=String(q[field]||'').toLowerCase();
-      if(!buckets[key])return;
-      buckets[key].total++;
-      if(S.answers[i]!==undefined && S.answers[i]===q.ans)buckets[key].correct++;
-    });
+    const buckets=computeBuckets(field,order);
     const rows=order.filter(k=>buckets[k].total>0).map(k=>{
       const b=buckets[k],pct=b.total?Math.round((b.correct/b.total)*100):0;
       return `<div class="sv-bar-row"><span class="sv-bar-lbl">${labels[k]}</span><div class="sv-bar-track"><div class="sv-bar-fill correct" style="width:${pct}%"></div></div><span class="sv-bar-pct">${b.correct}/${b.total} q &middot; ${pct}%</span></div>`;
     }).join('');
     return rows || '<div style="font-size:.78rem;color:#999;padding:2px 0">No tagged questions in this pool.</div>';
+  }
+  // Wraps the shared, top-level computeCandidateAnalysisSentences() (see
+  // above the buildReport() function) as the report's HTML block — the
+  // exact same sentences also go into the Sheet's Candidate Analysis
+  // column via submitToSheets(), so the PDF and the Sheet can never
+  // disagree about what this candidate's breakdown means.
+  function buildCandidateAnalysis(){
+    return `<div class="integrity-note">${computeCandidateAnalysisSentences().join(' ')}</div>`;
   }
 
   /* PAGE 1 */
@@ -4190,12 +4293,17 @@ function buildReport(){
     <div class="r-divider"></div>
     <div class="r-sec">
       <div class="r-sec-lbl">Performance by Difficulty</div>
-      <div class="sv-bars">${tagBreakdownHtml('difficulty',['simple','moderate','hard'],{simple:'Simple',moderate:'Moderate',hard:'Hard'})}</div>
+      <div class="sv-bars">${tagBreakdownHtml('difficulty',DIFF_ORDER,{simple:'Simple',moderate:'Moderate',hard:'Hard'})}</div>
     </div>
     <div class="r-divider"></div>
     <div class="r-sec">
       <div class="r-sec-lbl">Performance by Question Type</div>
-      <div class="sv-bars">${tagBreakdownHtml('type',['theoretical','applied','practical','scenario'],{theoretical:'Theoretical',applied:'Applied',practical:'Practical',scenario:'Scenario-based'})}</div>
+      <div class="sv-bars">${tagBreakdownHtml('type',TYPE_ORDER,{theoretical:'Theoretical',applied:'Applied',practical:'Practical',scenario:'Scenario-based'})}</div>
+    </div>
+    <div class="r-divider"></div>
+    <div class="r-sec">
+      <div class="r-sec-lbl">Assessment Consensus — What These Scores Indicate</div>
+      ${buildCandidateAnalysis()}
     </div>
     <div class="r-divider"></div>
     <div class="r-sec">
