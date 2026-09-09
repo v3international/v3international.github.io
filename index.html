@@ -1136,9 +1136,24 @@ body.light .modal{background:#fff}
            searches by name and lets Master commit a recovery without
            touching Apps Script. -->
       <div class="etab-content" data-tab="recover">
+        <div class="editor-card" style="margin-bottom:14px">
+          <div class="ec-hdr">
+            <div class="ec-hdr-title">⚠️ Stuck Exams — Auto-Detected</div>
+            <button class="btn btn-xs btn-ghost" onclick="checkStuckExams()">↻ Re-check</button>
+          </div>
+          <div class="ec-body">
+            <p style="font-size:.8rem;color:var(--muted);margin-bottom:10px;line-height:1.6">
+              Runs automatically whenever this tab opens — no need to wait for a candidate to report a missing
+              result. Flags any exam (online link or in-person) still marked "in progress" well past the exam's
+              time limit, with nothing recorded in the Sheet for it yet. Covers both modes the same way: an
+              interrupted candidate looks identical here regardless of what caused the interruption.
+            </p>
+            <div id="stuck-exams-list"><p style="color:var(--muted);font-size:.82rem">Checking…</p></div>
+          </div>
+        </div>
         <div class="editor-card">
           <div class="ec-hdr">
-            <div class="ec-hdr-title">🆘 Recover Exam</div>
+            <div class="ec-hdr-title">🔍 Search By Name</div>
           </div>
           <div class="ec-body">
             <p style="font-size:.82rem;color:var(--muted);margin-bottom:12px;line-height:1.6">
@@ -2059,6 +2074,7 @@ function editorTab(name){
   if(name==='creds')renderCredPanel();
   if(name==='team')renderTeamPanel();
   if(name==='master-toks')masterRefreshTokens();
+  if(name==='recover')checkStuckExams();
   if(name==='pool')renderPoolPanel();
 }
 /* ── POOL SETTINGS PANEL ─────────────────────────────── */
@@ -2815,6 +2831,44 @@ async function masterRefreshTokens(){
    row never appeared. Their answers were still saved to Drive the whole
    time; this searches for that saved data by name and lets Master commit
    a recovered row without needing to open Apps Script. */
+// Proactive counterpart to searchRecoverable() below — runs automatically
+// every time this tab opens, rather than waiting for a candidate to
+// notice and report a missing result. Flags anything still 'inprogress'
+// well past the exam's time limit with nothing in the Sheet yet — the
+// same shape as the Mohammad Kassar incident, whether the underlying
+// cause was in-person (device handed off) or online (candidate closed
+// the tab and never came back). Same recoverExamToken() action as the
+// manual search results below.
+async function checkStuckExams(){
+  const el=$('stuck-exams-list');
+  if(!el)return;
+  el.innerHTML='<p style="color:var(--muted);font-size:.82rem">Checking…</p>';
+  const resp=await gsPost({action:'list_stuck_exams',currentMaster:_masterPassCache});
+  if(!resp?.ok){el.innerHTML=`<p style="color:var(--fail)">Check failed: ${escH(resp?.error||'unknown error')}</p>`;return;}
+  const stuck=resp.stuck||[];
+  if(!stuck.length){el.innerHTML='<p style="color:var(--ok);font-size:.82rem">✅ Nothing stuck — every exam started is either still within its time window, completed, or already recorded.</p>';return;}
+  el.innerHTML=stuck.map(s=>{
+    const info=discLabelInfo(s.discKey);
+    const discLabel=info?`${info.discipline} · ${info.division}`:(s.discKey||'—');
+    const hoursAgo=(s.elapsedMins/60).toFixed(1);
+    let actionHtml;
+    if(!s.hasExamData){
+      actionHtml=`<div style="color:var(--muted);font-size:.8rem">No exam data saved for this token — likely never actually started. May just be an abandoned/unused link.</div>`;
+    }else{
+      actionHtml=`<div style="font-size:.8rem;margin-bottom:6px">${s.answered}/${s.totalQs} questions were answered before it stalled.</div>
+        <button class="btn btn-sm btn-danger" onclick="recoverExamToken('${s.tokenId}','${escH(s.name).replace(/'/g,"\\'")}')">⚠ Recover This Result Into The Sheet</button>`;
+    }
+    return `<div class="editor-card" style="margin-bottom:10px;border-color:#b98a00">
+        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px">
+          <div>
+            <div style="font-weight:700">${escH(s.name)}</div>
+            <div style="font-size:.76rem;color:var(--muted)">${escH(s.email)} · ${discLabel} · started ${hoursAgo}h ago, still "in progress"</div>
+          </div>
+        </div>
+        ${actionHtml}
+      </div>`;
+  }).join('');
+}
 async function searchRecoverable(){
   const name=($('recover-search-name')?.value||'').trim();
   const el=$('recover-results');
