@@ -8,9 +8,49 @@ edits here take effect immediately with no integration work.
 
 ## Status of this file
 Seeded from the divisions/disciplines already encoded in `index.html` (real,
-verified data). The company-profile sections below (history, sectors,
-notable projects, mission) are placeholders — fill them in directly, or paste
-the relevant pages from v3international.com and Claude will populate them.
+verified data), plus real content pasted from v3international.com's
+Expertise page. Still missing: Our Projects page content, Who We Are page
+(history/team size), and the 5 individual service pages — paste those and
+this file gets filled in further. Direct fetch of the live site is blocked
+by this session's network egress policy.
+
+## Company profile
+
+- **Full legal name:** V3 Middle East Engineering Consultants (per site
+  copyright footer)
+- **Tagline:** "Expertise That Transforms" — "From concept to completion,
+  our expert engineers guide your projects to success."
+- **Stated values (from Expertise page):** "V3's long legacy has been built
+  on our top priorities of unsurpassed quality, commitment to excellence,
+  and focus on clients, while taking immense pride in our success and
+  accomplishments that we attribute to our most valuable asset, our
+  dedicated team."
+- **Founded / history:** TO FILL IN (paste Who We Are page)
+- **Head office / regional offices:** TO FILL IN
+- **Sectors served:** TO FILL IN (paste Our Projects page)
+- **Notable projects:** TO FILL IN (paste Our Projects page)
+- **Team size:** TO FILL IN
+- **Certifications / accreditations:** TO FILL IN
+
+## Service lines (source: v3international.com/expertise/)
+
+1. **Architecture and Engineering Design Consultancy** — maps to the
+   "Design and AOR" division in the exam system
+2. **Project Management and Construction Supervision** — maps to the
+   "Construction Supervision" division in the exam system
+3. **Fire and Life Safety** — maps to FLS / Fire Alarm / Fire Protection /
+   Smoke Control Engineer disciplines under Design and AOR
+4. **Municipal Consulting Services** — NOT currently reflected as its own
+   discipline anywhere in `DISC_MAP`; may warrant its own question bank if
+   V3 hires for it directly
+5. **Survey and Mapping Services** — also NOT currently reflected as its
+   own discipline in `DISC_MAP`; closest existing discipline is Civil/
+   Infrastructure, but surveying is its own technical competency and may
+   deserve its own bank rather than being folded into Civil
+
+(Full detail on each service line lives on its own `/service/...` page —
+paste those too if you want the question banks to reflect what each
+service actually involves, beyond the one-line description on Expertise.)
 
 ## Divisions & Disciplines (source of truth: `DISC_MAP` in index.html)
 
