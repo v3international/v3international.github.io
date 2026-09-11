@@ -308,6 +308,7 @@ body:not(.light) .tp-fld select option{background:#0d1625;color:#E8E2D6}
 .tok-s-revoked{background:rgba(139,32,32,.12);color:#f08080;border:1px solid rgba(139,32,32,.28)}
 .tok-s-prog{background:rgba(176,80,0,.12);color:#f0a060;border:1px solid rgba(176,80,0,.28)}
 .tok-s-deleted{background:rgba(80,80,80,.14);color:#aaa;border:1px solid rgba(100,100,100,.25)}
+.tok-s-expired{background:rgba(120,120,120,.14);color:#999;border:1px solid rgba(120,120,120,.3)}
 
 /* ═══ SETUP PANEL ══════════════════════════════════════════ */
 .setup-shell{flex:1;padding:24px 16px 60px;overflow-y:auto}
@@ -514,6 +515,12 @@ body.light .modal{background:#fff}
 .thanks-icon{font-size:3.2rem;margin-bottom:16px}
 .thanks-box h2{font-family:var(--serif);font-size:2rem;color:var(--hd);margin-bottom:10px;font-weight:700}
 .thanks-box p{font-size:.93rem;line-height:1.7;color:var(--bd-txt)}
+.thanks-box.thanks-ok{border-color:var(--ok)}
+.thanks-box.thanks-ok h2{color:var(--ok)}
+.thanks-box.thanks-warn{border-color:var(--warn)}
+.thanks-box.thanks-warn h2{color:var(--warn)}
+.thanks-box.thanks-fail{border-color:var(--fail)}
+.thanks-box.thanks-fail h2{color:var(--fail)}
 .admin-gate{margin-top:28px;padding-top:24px;border-top:1px solid var(--card-br)}
 .admin-hint{font-family:var(--mono);font-size:.64rem;letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px;color:var(--lbl);font-weight:700}
 .admin-row{display:flex;gap:8px}
@@ -662,6 +669,11 @@ body.light .modal{background:#fff}
 .tok-err h2{font-family:var(--serif);font-size:1.65rem;color:#E8E2D6;margin:16px 0 10px;font-weight:700}
 .tok-err p{color:rgba(232,226,214,.6);font-size:.9rem;line-height:1.7}
 .no-print-note{font-size:.72rem;color:#888;text-align:center;padding:14px;font-style:italic}
+
+/* Connection-loss banner */
+.conn-banner{display:none;position:fixed;top:0;left:0;right:0;z-index:9998;background:var(--fail);color:#fff;text-align:center;padding:10px 16px;font-weight:700;font-size:.84rem;box-shadow:0 2px 14px rgba(0,0,0,.35)}
+.conn-banner.on{display:block;animation:connPulse 1.6s ease-in-out infinite}
+@keyframes connPulse{0%,100%{opacity:1}50%{opacity:.82}}
 
 /* Source protection toast */
 .protect-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:rgba(10,22,40,.97);border:2px solid var(--gold);border-radius:16px;padding:32px 44px;text-align:center;backdrop-filter:blur(20px);display:none}
@@ -1685,6 +1697,15 @@ body.light .modal{background:#fff}
 </div>
 
 <!-- ══ EXAM ═════════════════════════════════════════════ -->
+<!-- Connection-loss warning — fixed, independent of screen routing, so it
+     shows the instant an answer sync fails and clears the instant one
+     succeeds again. Silent sync failures (no retry, no visible signal)
+     were the direct mechanism behind a candidate's answers going
+     unrecorded after Q4 with nothing surfacing anywhere until an admin
+     went looking days later. -->
+<div class="conn-banner" id="conn-banner">
+  ⚠ Connection lost — your answers from here are NOT being saved. Reconnect to the internet now; this will clear automatically once saving resumes. Do not close this window.
+</div>
 <div id="s-exam" class="scr">
   <div class="exam-bar">
     <img class="exam-logo-lt" src="" data-logo="blue" alt="V3">
@@ -1751,9 +1772,9 @@ body.light .modal{background:#fff}
   </nav>
   <div class="inner" style="flex:1;display:flex;align-items:center;justify-content:center;padding:40px 16px">
     <div class="thanks-box">
-      <div class="thanks-icon">✅</div>
-      <h2>Submission Received</h2>
-      <p>Thank you for completing the V3 Middle East Technical Screening Examination. Your responses have been securely recorded. HR will contact you regarding the outcome.</p>
+      <div class="thanks-icon" id="thanks-icon">⏳</div>
+      <h2 id="thanks-title">Finalizing Your Submission…</h2>
+      <p id="thanks-msg">Please keep this window open while we confirm your results were saved — this can take a little longer if your connection is unstable, but it will keep retrying automatically. Do not close this tab.</p>
       <!-- Admin gate removed — use 📄 View Report from the audit log -->
     </div>
   </div>
@@ -2969,8 +2990,8 @@ function renderMasterTokTable(toks){
   if(!toks.length){el.innerHTML='<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--muted)">No tokens.</td></tr>';return;}
   const sorted=toks.sort((a,b)=>new Date(b.created)-new Date(a.created));
   el.innerHTML=sorted.map(t=>{
-    const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted'};
-    const parts=(stMap[t.status]||'tok-s-active Active').split(' ');
+    const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted',expired:'tok-s-expired Expired'};
+    const parts=(stMap[effectiveTokStatus(t)]||'tok-s-active Active').split(' ');
     const stClass=parts[0],stLabel=parts.slice(1).join(' ');
     const _info=discLabelInfo(t.discKey);
     const disc=_info?.discipline||t.discKey||'—';
@@ -3142,21 +3163,69 @@ async function startExamRemote(tokenId){
 // clock-manipulated client trying to keep going past time), submit
 // immediately rather than let the candidate keep answering into the void.
 let _syncAnsTimer=null;
+// Failed syncs used to just vanish — gsPost() swallows network errors and
+// resolves null rather than throwing, so the old bare .then()/.catch(()=>{})
+// here silently did nothing on failure: no retry, no signal to the
+// candidate, nothing. Answers picked while offline stayed correct in
+// S.answers (and still get sent on the NEXT successful sync, since every
+// call sends the full current S.answers, not just what's new) but nothing
+// tells anyone a save is actually failing right now — this is the
+// mechanism that let a candidate's post-Q4 answers go unrecorded with no
+// trace until an admin dug through Drive days later. Now: on failure,
+// show conn-banner and keep retrying (backoff, capped) until a sync
+// actually succeeds or the exam ends; a browser 'online' event also
+// triggers an immediate retry rather than waiting out the backoff.
+let _syncFailStreak=0, _syncRetryTimer=null;
+function setConnBanner(ok){
+  const el=$('conn-banner');if(!el)return;
+  el.classList.toggle('on',!ok);
+}
+function doSyncAnswer(){
+  if(!S.tokenId)return;
+  gsPost({action:'sync_answer',token:S.tokenId,answers:S.answers,skipped:S.skipped,justifications:S.justifications})
+    .then(r=>{
+      if(r===null){ // gsPost() returns null on any network/fetch failure
+        _syncFailStreak++;
+        setConnBanner(false);
+        clearTimeout(_syncRetryTimer);
+        const delay=Math.min(3000*_syncFailStreak,20000);
+        _syncRetryTimer=setTimeout(()=>{ if(examInProgress)doSyncAnswer(); },delay);
+        return;
+      }
+      _syncFailStreak=0;
+      setConnBanner(true);
+      if(r?.expired&&examInProgress)beginFinalSubmit();
+    });
+}
+window.addEventListener('online',()=>{ if(examInProgress){clearTimeout(_syncRetryTimer);doSyncAnswer();} });
+window.addEventListener('offline',()=>{ if(examInProgress)setConnBanner(false); });
 function syncAnswerRemote(){
   if(!S.tokenId)return;
   clearTimeout(_syncAnsTimer);
-  _syncAnsTimer=setTimeout(()=>{
-    gsPost({action:'sync_answer',token:S.tokenId,answers:S.answers,skipped:S.skipped,justifications:S.justifications})
-      .then(r=>{ if(r?.expired&&examInProgress)beginFinalSubmit(); })
-      .catch(()=>{});
-  },500);
+  _syncAnsTimer=setTimeout(doSyncAnswer,500);
 }
+// This is the single highest-stakes network call in the whole exam — if
+// it never lands, the candidate gets scored 0%/FAIL purely because the
+// network was down at the wrong moment (see finaliseExam()), which is
+// worse than no result at all. The old 3-attempt/1.5s-flat retry gives up
+// well inside the length of a typical wifi drop-and-reconnect cycle.
+// Retries harder and longer now (up to ~2.5 minutes of backoff) and reacts
+// immediately to a browser 'online' event instead of waiting out the
+// current backoff delay if connectivity comes back mid-retry.
 async function gradeExamRemote(tokenId,answers){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
-  for(let attempt=1;attempt<=3;attempt++){
+  const maxAttempts=10;
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
     const resp=await gsPost({action:'grade_exam',token:tokenId,answers});
     if(resp?.ok)return resp;
-    if(attempt<3) await new Promise(r=>setTimeout(r,1500));
+    if(attempt<maxAttempts){
+      const delay=Math.min(2000*attempt,20000);
+      await new Promise(resolve=>{
+        const onOnline=()=>{clearTimeout(t);window.removeEventListener('online',onOnline);resolve();};
+        const t=setTimeout(()=>{window.removeEventListener('online',onOnline);resolve();},delay);
+        window.addEventListener('online',onOnline);
+      });
+    }
   }
   return null;
 }
@@ -3188,6 +3257,17 @@ async function createToken(params){
   saveTokStore(store);
   const synced=await pushTokenRemote(tok); // required now — a short id carries no data of its own
   return {id,synced};
+}
+// A token's stored status only ever transitions on an explicit action
+// (started, completed, revoked, deleted) — nothing flips it to "expired"
+// on its own once its expires timestamp passes, so an unused token past
+// its deadline sat displaying as "Active" in Master forever, even though
+// handleStartExam()/validateToken() already correctly refuse to let
+// anyone actually start it. This computes the DISPLAY status only (never
+// mutates the stored token) so the two agree with what's actually usable.
+function effectiveTokStatus(t){
+  if(t.status==='active' && t.expires && new Date(t.expires)<new Date())return'expired';
+  return t.status;
 }
 async function validateToken(id){
   // 1. Same-device fast path (operator testing their own link)
@@ -3367,8 +3447,8 @@ function copyAllLinks(){
 function renderDashboardFromLocal(){
   const store=getTokStore();
   const toks=Object.values(store).filter(t=>t.status!=='deleted');
-  const counts={active:0,inprogress:0,used:0,revoked:0};
-  toks.forEach(t=>{if(counts[t.status]!==undefined)counts[t.status]++;else counts.active++;});
+  const counts={active:0,inprogress:0,used:0,revoked:0,expired:0};
+  toks.forEach(t=>{const s=effectiveTokStatus(t);if(counts[s]!==undefined)counts[s]++;else counts.active++;});
   if($('stat-active'))$('stat-active').textContent=counts.active;
   if($('stat-prog'))$('stat-prog').textContent=counts.inprogress;
   if($('stat-done'))$('stat-done').textContent=counts.used;
@@ -3410,8 +3490,8 @@ function renderTokLog(toks){
   const sorted=toks.sort((a,b)=>new Date(b.created)-new Date(a.created)).slice(0,300);
   if(!sorted.length){el.innerHTML='<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--muted);font-size:.85rem">No tokens match the current filters.</td></tr>';return;}
   el.innerHTML=sorted.map(t=>{
-    const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted'};
-    const parts=(stMap[t.status]||'tok-s-active Active').split(' ');
+    const stMap={active:'tok-s-active Active',inprogress:'tok-s-prog In Progress',used:'tok-s-used Completed',revoked:'tok-s-revoked Revoked',deleted:'tok-s-deleted Deleted',expired:'tok-s-expired Expired'};
+    const parts=(stMap[effectiveTokStatus(t)]||'tok-s-active Active').split(' ');
     const stClass=parts[0],stLabel=parts.slice(1).join(' ');
     const _info=discLabelInfo(t.discKey);
     const disc=_info?.discipline||t.discKey||'—';
@@ -3943,7 +4023,9 @@ function beginFinalSubmit(){
   _submitStarted=true;
   examInProgress=false;
   clearInterval(S.timerRef);
-  goto('s-thanks'); // navigate away from the exam screen immediately — before any await
+  clearTimeout(_syncRetryTimer);
+  setConnBanner(true); // don't leave the mid-exam banner stuck on past this point —
+  goto('s-thanks');    // finaliseExam()'s own grade/submit retries surface separately
   Promise.resolve(finaliseExam()).catch(e=>console.error(e));
 }
 function doSubmit(){closeModal();beginFinalSubmit();}
@@ -3976,7 +4058,14 @@ async function finaliseExam(){
   // first await — see the guard comment there)
 
   // Step 1: write the exam row to the sheet and WAIT for confirmation
-  await submitToSheets();
+  const sheetResult = await submitToSheets();
+
+  // Tell the candidate the real outcome now, instead of the old static
+  // "securely recorded" message that showed unconditionally regardless
+  // of whether anything actually saved — that false-positive is exactly
+  // how a mid-exam connection drop can go unnoticed until days later.
+  if(sheetResult?.ok) setThanksState(S.gradingFailed ? 'warn' : 'ok');
+  else setThanksState('fail');
 
   // Step 2: upload the video now that the row is confirmed to exist.
   // This used to fire independently, as soon as the recording finished —
@@ -3989,11 +4078,43 @@ async function finaliseExam(){
   // set by the time the report is built, so the exported report's own
   // "Review Proctoring Video" link points at the real Drive file instead
   // of a browser-local blob: URL that stops working once this tab closes.
+  // Best-effort only — neither failing this nor the report build below
+  // changes the core recorded/not-recorded message set above.
   const videoBlob = await videoBlobPromise;
   if(videoBlob) await uploadVideoToDrive(videoBlob);
 
   // Step 3: build report card HTML and upload — writes Drive Report link back to sheet
   await generateAndUploadPdf();
+}
+// Updates the post-exam screen to reflect what actually happened, instead
+// of the old unconditional "Your responses have been securely recorded"
+// message. 'ok' = Sheet write confirmed and grading succeeded; 'warn' =
+// Sheet write confirmed but the score couldn't be confirmed with the
+// server (flagged 'GRADING FAILED — CONTACT IT' in the row itself); 'fail'
+// = the Sheet write itself never confirmed even after all retries, so the
+// candidate needs to flag this to a human right away rather than walk away
+// thinking they're done.
+function setThanksState(state){
+  const icon=$('thanks-icon'), title=$('thanks-title'), msg=$('thanks-msg');
+  const box=document.querySelector('.thanks-box');
+  if(!icon||!title||!msg)return;
+  box?.classList.remove('thanks-ok','thanks-warn','thanks-fail');
+  if(state==='ok'){
+    box?.classList.add('thanks-ok');
+    icon.textContent='✅';
+    title.textContent='Submission Received';
+    msg.textContent='Your responses have been securely recorded. You may now close this window.';
+  }else if(state==='warn'){
+    box?.classList.add('thanks-warn');
+    icon.textContent='⚠️';
+    title.textContent='Submitted — Under Review';
+    msg.textContent='Your answers were recorded, but we could not confirm your score with the server. This has been flagged for manual review — you do not need to retake the exam. Please let HR/IT know you saw this message.';
+  }else{
+    box?.classList.add('thanks-fail');
+    icon.textContent='❌';
+    title.textContent='Submission Not Confirmed';
+    msg.textContent='We could not confirm your answers were saved, even after repeated retries. Please do NOT close this window — take a screenshot of this screen and notify the exam proctor or HR immediately so they can check and, if needed, arrange a retake.';
+  }
 }
 /* ── APPS SCRIPT FETCH (with redirect + error handling) ──────────────
    Apps Script Web Apps return a 302 redirect before the JSON response.
@@ -4106,13 +4227,34 @@ async function testConnection(){
 }
 
 
+// The single most important write in the whole exam (the actual Sheet
+// row) had ZERO retry at all — one gsPost() call, and if that failed the
+// candidate's result simply never existed anywhere a human would look,
+// with no second attempt. Same retry treatment as gradeExamRemote() now:
+// hard retries with backoff, reacting immediately to an 'online' event.
+async function postExamResultWithRetry(payload){
+  const maxAttempts=10;
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
+    const data=await gsPost(payload);
+    if(data?.ok)return data;
+    if(attempt<maxAttempts){
+      const delay=Math.min(2000*attempt,20000);
+      await new Promise(resolve=>{
+        const onOnline=()=>{clearTimeout(t);window.removeEventListener('online',onOnline);resolve();};
+        const t=setTimeout(()=>{window.removeEventListener('online',onOnline);resolve();},delay);
+        window.addEventListener('online',onOnline);
+      });
+    }
+  }
+  return null;
+}
 async function submitToSheets(){
   // Calculate time taken here (endTs set in finaliseExam before this call)
   const timeTaken = S.startTs && S.endTs
     ? Math.round((new Date(S.endTs) - new Date(S.startTs)) / 60000) + ' min'
     : 'N/A';
 
-  const data = await gsPost({
+  const data = await postExamResultWithRetry({
     action      : 'exam_result',
     timestamp   : S.submissionTs || new Date().toISOString(),
     name        : S.name,
