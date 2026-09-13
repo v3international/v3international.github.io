@@ -2202,7 +2202,12 @@ async function goLive(){
   let synced = false;
   if(CFG.GS_ENDPOINT && !CFG.GS_ENDPOINT.includes('PASTE_YOUR')){
     try{
-      const resp = await gsPost({ action:'save_qb', payload, currentMaster:_masterPassCache });
+      // The Master's actual "publish these edits live" action — used to be
+      // one bare gsPost() call, so a connection blip right here (Master
+      // CRUD's own network calls were already flagged as unreliable) meant
+      // silently falling back to "Saved Locally" with the Master having no
+      // reason to know a simple retry would have gone through.
+      const resp = await gsPostWithRetry({ action:'save_qb', payload, currentMaster:_masterPassCache });
       if(resp?.ok){
         synced = true;
         console.log('V3: QB pushed to Drive ✓', resp.savedAt);
@@ -3107,7 +3112,13 @@ function decodeTokenPayload(id){
 async function pushTokenRemote(tok){
   if(!tok||!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return false;
   const {_snap,...slim}=tok; // exam snapshot stays local — only status/id sync remotely
-  const resp=await gsPost({action:'save_token',token:slim});
+  // completeToken()/lockToken() call this without awaiting it (fire-and-
+  // forget), so retrying here costs nothing visible to the candidate — it
+  // just quietly keeps trying instead of giving up after one blip. The one
+  // caller that DOES await this (createToken(), used by the in-person
+  // launch flow) benefits from the same hardening rather than a session
+  // launching on a token that never actually reached the server.
+  const resp=await gsPostWithRetry({action:'save_token',token:slim});
   return !!resp?.ok;
 }
 // Actually removes tokens from the server's index (Code.gs v8.11+,
@@ -3156,9 +3167,13 @@ async function fetchAllTokensRemote(){
 // a reload resume the exam instead of restarting or locking it out.
 async function startExamRemote(tokenId){
   if(!CFG.GS_ENDPOINT||CFG.GS_ENDPOINT.includes('PASTE_YOUR'))return null;
-  const resp=await gsPost({action:'start_exam',token:tokenId});
-  if(resp?.ok&&Array.isArray(resp.questions)&&resp.questions.length)return resp;
-  return null;
+  // Now the single highest-traffic call in the whole app — every fresh
+  // exam start goes through this at the exact moment the candidate clicks
+  // "Start Examination" (see startExam()) — so it gets the same hard
+  // retry as the grade/submit calls rather than failing the candidate out
+  // to a generic error on one bad network blip.
+  const isStarted=d=>d?.ok&&Array.isArray(d.questions)&&d.questions.length;
+  return await gsPostWithRetry({action:'start_exam',token:tokenId},isStarted);
 }
 // Persists S.answers/S.skipped to the backend so an in-progress exam
 // survives a reload. Debounced (not one request per keystroke-equivalent
@@ -4268,20 +4283,25 @@ async function testConnection(){
 
 // Generic hard-retry wrapper around gsPost() — backoff up to 20s/attempt,
 // reacting immediately to an 'online' event if connectivity returns mid-
-// wait, same treatment as gradeExamRemote(). Used by every post-exam
-// upload (the Sheet row, the proctoring video, the PDF/report) — each of
-// these used to be a single bare gsPost() call with zero retry, so a
-// connection hiccup at exactly the wrong moment meant that piece simply
-// never existed anywhere a human would look, with no second attempt. The
-// Sheet row was the first to get this treatment; the video/report
-// uploads went uncovered for a while after — exactly the gap that let a
-// candidate's Sheet row show up fully graded with the Proctor Video and
-// Drive Report columns left blank, no video, no report, ever generated.
-async function gsPostWithRetry(payload){
+// wait, same treatment as gradeExamRemote(). Used by every network call
+// where losing the response to a connection hiccup would mean that data
+// simply never existed anywhere a human would look, with no second
+// attempt: the Sheet row, the proctoring video, the PDF/report, starting
+// the exam itself, and the Master's Go Live question-bank push. Each of
+// these used to be (or in the case of any future one added without this
+// wrapper, would still be) a single bare gsPost() call with zero retry —
+// exactly the gap that let a candidate's Sheet row show up fully graded
+// with the Proctor Video and Drive Report columns left blank, no video,
+// no report, ever generated. isSuccess lets a caller whose backend
+// response shape isn't the usual {ok:true,...} (e.g. start_exam, which
+// also requires a non-empty questions array) define what "succeeded"
+// means; defaults to the common case.
+async function gsPostWithRetry(payload,isSuccess){
+  isSuccess=isSuccess||(d=>d?.ok);
   const maxAttempts=10;
   for(let attempt=1;attempt<=maxAttempts;attempt++){
     const data=await gsPost(payload);
-    if(data?.ok)return data;
+    if(isSuccess(data))return data;
     if(attempt<maxAttempts){
       const delay=Math.min(2000*attempt,20000);
       await new Promise(resolve=>{
