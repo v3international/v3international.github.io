@@ -1644,7 +1644,7 @@ body.light .modal{background:#fff}
         <div class="meta-cell"><div class="meta-k">Division</div><div class="meta-v" id="m-div"></div></div>
         <div class="meta-cell"><div class="meta-k">Level</div><div class="meta-v" id="m-level"></div></div>
         <div class="meta-cell"><div class="meta-k">Questions</div><div class="meta-v" id="m-qcount">20 MCQ</div></div>
-        <div class="meta-cell"><div class="meta-k">Time Allowed</div><div class="meta-v">30 Minutes</div></div>
+        <div class="meta-cell"><div class="meta-k">Time Allowed</div><div class="meta-v" id="m-time">45 Minutes</div></div>
         <div class="meta-cell"><div class="meta-k">Pass Mark</div><div class="meta-v" id="m-passmark">70% (14/20)</div></div>
         <div class="meta-cell"><div class="meta-k">Position</div><div class="meta-v" id="m-pos"></div></div>
         <div class="meta-cell"><div class="meta-k">Session Mode</div><div class="meta-v">Proctored · Recorded</div></div>
@@ -3671,12 +3671,14 @@ function populateIntro(){
   // handler on #intro-confirm), so both must be reset together here.
   if($('intro-confirm'))$('intro-confirm').checked=false;
   if($('start-exam-btn'))$('start-exam-btn').disabled=true;
-  // These used to be hardcoded as "20 MCQ" / "70% (14/20)" regardless of
-  // the actual configured exam length/pass mark — misleading if either
-  // is ever changed from its default.
+  // These used to be hardcoded as "20 MCQ" / "70% (14/20)" / "30 Minutes"
+  // regardless of the actual configured exam length/pass mark — misleading
+  // if any of these is ever changed from its default.
   const examQ=CFG.EXAM_Q||20, passPct=CFG.PASS_PCT||70;
   if($('m-qcount'))$('m-qcount').textContent=examQ+' MCQ';
   if($('m-passmark'))$('m-passmark').textContent=passPct+'% ('+Math.round(examQ*passPct/100)+'/'+examQ+')';
+  if($('m-time'))$('m-time').textContent=Math.round((CFG.EXAM_SECS||2700)/60)+' Minutes';
+  if($('tol-mins'))$('tol-mins').textContent=Math.round((CFG.EXAM_SECS||2700)/60);
 }
 
 /* ═══════════════════════════════════════════════════════
