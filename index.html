@@ -3905,7 +3905,7 @@ async function uploadVideoToDrive(blob){
       reader.onerror=()=>reject(reader.error);
       reader.readAsDataURL(blob);
     });
-    const data=await gsPost({
+    const data=await gsPostWithRetry({
       action:'upload_video',
       name:S.name,email:S.email,
       submissionTs:S.submissionTs,
@@ -3916,6 +3916,8 @@ async function uploadVideoToDrive(blob){
     if(data?.fileUrl){
       S.videoUploadUrl=data.fileUrl;
       console.log('V3: video uploaded ✓',data.fileUrl);
+    }else{
+      console.error('V3: video upload failed after retries — no video will exist for this candidate.');
     }
   }catch(e){console.warn('V3: video upload failed:',e);}
 }
@@ -4264,12 +4266,18 @@ async function testConnection(){
 }
 
 
-// The single most important write in the whole exam (the actual Sheet
-// row) had ZERO retry at all — one gsPost() call, and if that failed the
-// candidate's result simply never existed anywhere a human would look,
-// with no second attempt. Same retry treatment as gradeExamRemote() now:
-// hard retries with backoff, reacting immediately to an 'online' event.
-async function postExamResultWithRetry(payload){
+// Generic hard-retry wrapper around gsPost() — backoff up to 20s/attempt,
+// reacting immediately to an 'online' event if connectivity returns mid-
+// wait, same treatment as gradeExamRemote(). Used by every post-exam
+// upload (the Sheet row, the proctoring video, the PDF/report) — each of
+// these used to be a single bare gsPost() call with zero retry, so a
+// connection hiccup at exactly the wrong moment meant that piece simply
+// never existed anywhere a human would look, with no second attempt. The
+// Sheet row was the first to get this treatment; the video/report
+// uploads went uncovered for a while after — exactly the gap that let a
+// candidate's Sheet row show up fully graded with the Proctor Video and
+// Drive Report columns left blank, no video, no report, ever generated.
+async function gsPostWithRetry(payload){
   const maxAttempts=10;
   for(let attempt=1;attempt<=maxAttempts;attempt++){
     const data=await gsPost(payload);
@@ -4291,7 +4299,7 @@ async function submitToSheets(){
     ? Math.round((new Date(S.endTs) - new Date(S.startTs)) / 60000) + ' min'
     : 'N/A';
 
-  const data = await postExamResultWithRetry({
+  const data = await gsPostWithRetry({
     action      : 'exam_result',
     timestamp   : S.submissionTs || new Date().toISOString(),
     name        : S.name,
@@ -4398,7 +4406,7 @@ async function generateAndUploadPdf(){
 
     console.log('V3: report ~' + Math.round(reportHtml.length/1024) + 'KB');
 
-    const data = await gsPost({
+    const data = await gsPostWithRetry({
       action:'upload_pdf',
       name:S.name, email:S.email,
       submissionTs:S.submissionTs,
