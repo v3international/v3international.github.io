@@ -3645,10 +3645,14 @@ async function launchSession(){
     if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
     return showErr('setup-err','Could not connect to the exam backend — check the connection and try again.');
   }
-  const started=await startExamRemote(tokenId);
   if(launchBtn){launchBtn.disabled=false;launchBtn.textContent='Launch Session →';}
-  if(!started)return showErr('setup-err','Could not load exam questions — check the connection and try again.');
-  S.qs=started.questions;S.tokenId=tokenId;S.inPersonMode=true;
+  // Deliberately do NOT draw questions / start the server clock here — HR
+  // "launching" the session is not the candidate starting it, and any gap
+  // between the two (walking the candidate to the device, handing over,
+  // them reading the briefing) must not silently eat into their exam time.
+  // The clock only starts once the candidate themselves clicks "Start
+  // Examination" on the briefing screen below (see startExam()).
+  S.qs=null;S.tokenId=tokenId;S.inPersonMode=true;
   S.name=name;S.email=email;S.phone=phone;S.position=pos;
   S.discKey=_discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=_sen;
   S.answers={};S.skipped={};S.justifications={};S.blurCount=0;S.forensics=[];S.curQ=0;S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;S._resumeSecsLeft=null;_submitStarted=false;
@@ -3692,9 +3696,35 @@ let examInProgress=false;
 // the question index to land on both come from that resume, not from
 // scratch. Called with no arguments, this is exactly the original
 // fresh-start behaviour.
-function startExam(resumeSecsLeft){
-  examInProgress=true;
+async function startExam(resumeSecsLeft){
   const isResume=resumeSecsLeft!=null;
+  // A fresh online-link or in-person session deliberately arrives here
+  // with S.qs still null — initTokenMode()/launchSession() skipped
+  // locking the token and starting the server clock so that merely
+  // opening the link / being handed the device didn't already cost the
+  // candidate time or use up a one-time link. This is the actual moment
+  // the briefing screen promises "the timer begins the moment you click
+  // Start" — so draw the question set and start the real clock right now,
+  // for the first time, rather than back when the link was opened.
+  if(!isResume && !S.qs){
+    const btn=$('start-exam-btn');
+    if(btn){btn.disabled=true;btn.textContent='Preparing your exam…';}
+    // Ask the server to actually start FIRST, before touching the token's
+    // local/pushed status — handleStartExam() re-checks revoked/used/
+    // deleted/expired at this exact moment (it could have changed during
+    // however long the candidate spent on the camera gate and briefing).
+    // Calling lockToken() before this check could otherwise re-flip a
+    // just-revoked token back to 'inprogress' from the client's side.
+    const started=await startExamRemote(S.tokenId);
+    if(!started){
+      if(btn){btn.disabled=false;btn.textContent='I Understand — Start Examination →';}
+      showToast('Could not start the exam — check your connection and try again.','err');
+      return;
+    }
+    lockToken(S.tokenId);
+    S.qs=started.questions;
+  }
+  examInProgress=true;
   S.secsLeft=isResume?resumeSecsLeft:CFG.EXAM_SECS;
   S.startTs=S.startTs||new Date().toISOString();
   $('cam-pip')?.classList.add('on');
@@ -4928,21 +4958,34 @@ async function initTokenMode(){
     // look it up by id) find it — a short link has no local copy yet on a
     // brand-new device even though validateToken() just resolved it fine.
     const _s=getTokStore();_s[tokId]=tok;saveTokStore(_s);
-    lockToken(tokId);S.tokenId=tokId;S.inPersonMode=false;
+    S.tokenId=tokId;S.inPersonMode=false;
     const info=discLabelInfo(tok.discKey);
     if(!info)return showTokenError('Invalid discipline. Contact HR.');
-    const started=await startExamRemote(tokId);
-    if(!started)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
-    S.qs=started.questions;
     S.name=tok.name;S.email=tok.email;S.phone=tok.phone||'';S.position=tok.position||'';
     S.discKey=tok.discKey;S.discipline=info.discipline;S.division=info.division;S.seniority=tok.seniority;
+    S.blurCount=0;S.forensics=[];S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
     if(isResume){
+      // Already running — the server clock started at the ORIGINAL Start
+      // click and never stopped, so lock+draw now (handleStartExam()
+      // replays the same stored question set/startTs rather than starting
+      // a fresh one) and skip straight past the briefing the candidate
+      // already saw before the reload.
+      lockToken(tokId);
+      const started=await startExamRemote(tokId);
+      if(!started)return showTokenError('Could not load exam questions. Check your connection and reopen this link, or contact HR.');
+      S.qs=started.questions;
       S.answers=started.answers||{};S.skipped=started.skipped||{};S.justifications=started.justifications||{};
       S._resumeSecsLeft=started.remainingSecs;
     }else{
-      S.answers={};S.skipped={};S.justifications={};S.curQ=0;S._resumeSecsLeft=null;
+      // Fresh link: deliberately do NOT lock the token or start the server
+      // clock yet — only validateToken() (read-only) has run. Opening the
+      // link, granting camera access, and reading the briefing must not by
+      // themselves use up a one-time link or eat into exam time; the
+      // token only locks and the clock only starts once the candidate
+      // actually clicks "Start Examination" (see startExam()) — matching
+      // what the briefing screen itself already promises the candidate.
+      S.qs=null;S.answers={};S.skipped={};S.justifications={};S.curQ=0;S._resumeSecsLeft=null;
     }
-    S.blurCount=0;S.forensics=[];S.videoUrl='';S.videoUploadUrl='';S.sheetRow=null;S.autoSubmittedForViolations=false;_submitStarted=false;
     populateIntro();setCamGateCopy(isResume);goto('s-cam-gate');
   }catch(e){
     console.error('V3: token init failed:',e);
