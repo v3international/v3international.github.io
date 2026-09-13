@@ -2759,9 +2759,13 @@ function renderQBForDisc(key, pool){
      </div>` +
     p.map((q,i) => {
       const difficulty = q.difficulty || 'simple';
-      const qtype = q.type || 'theoretical';
+      // normType() folds legacy applied/scenario tags into the current
+      // theoretical/practical pair so an old question shows its real
+      // equivalent selected here instead of silently defaulting to the
+      // first dropdown option.
+      const qtype = normType(q.type || 'theoretical');
       const DIFF_OPTS = [['simple','Simple'],['moderate','Moderate'],['hard','Hard']];
-      const TYPE_OPTS = [['theoretical','Theoretical'],['applied','Applied'],['practical','Practical'],['scenario','Scenario-based']];
+      const TYPE_OPTS = [['theoretical','Theoretical'],['practical','Practical']];
       const diffSelHtml = DIFF_OPTS.map(([v,l])=>`<option value="${v}"${difficulty===v?' selected':''}>${l}</option>`).join('');
       const typeSelHtml = TYPE_OPTS.map(([v,l])=>`<option value="${v}"${qtype===v?' selected':''}>${l}</option>`).join('');
       const optCount = (q.opts||[]).length;
@@ -4285,7 +4289,7 @@ async function submitToSheets(){
     // both, so the Sheet and the PDF can never show different numbers
     // for the same candidate.
     difficultyBreakdown: computeBreakdownLines('difficulty', DIFF_ORDER, {simple:'Simple',moderate:'Moderate',hard:'Hard'}),
-    typeBreakdown      : computeBreakdownLines('type', TYPE_ORDER, {theoretical:'Theoretical',applied:'Applied',practical:'Practical',scenario:'Scenario-based'}),
+    typeBreakdown      : computeBreakdownLines('type', TYPE_ORDER, {theoretical:'Theoretical',practical:'Practical'}),
     candidateAnalysis  : computeCandidateAnalysisSentences().join(' '),
     forensics   : JSON.stringify(S.forensics.slice(0, 60)),
     aiFlags     : JSON.stringify((typeof AIP !== 'undefined' ? AIP.flags : []).slice(0, 40)),
@@ -4387,7 +4391,19 @@ async function generateAndUploadPdf(){
    apart from each other.
 ═══════════════════════════════════════════════════════ */
 const DIFF_ORDER=['simple','moderate','hard'];
-const TYPE_ORDER=['theoretical','applied','practical','scenario'];
+// Question "type" is now a 2-way split — Theoretical (knowledge/recall) vs
+// Practical (judgement/field-based). Older question-bank entries authored
+// before this change may still carry one of the original 4 tags
+// (theoretical/applied/practical/scenario); normType() folds those into
+// the 2 current buckets (applied→theoretical, scenario→practical) so
+// every discipline's report reads consistently regardless of when its
+// questions were tagged, without needing to rewrite the stored data.
+const TYPE_ORDER=['theoretical','practical'];
+function normType(t){
+  if(t==='applied')return'theoretical';
+  if(t==='scenario')return'practical';
+  return t;
+}
 // Groups S.qs by q[field] (difficulty or type) and reports correct/total
 // per bucket — same "out of every question in the exam" convention as
 // the overall score (an unanswered question counts against its bucket,
@@ -4396,7 +4412,8 @@ function computeBuckets(field,order){
   const buckets={};
   order.forEach(k=>buckets[k]={correct:0,total:0});
   S.qs.forEach((q,i)=>{
-    const key=String(q[field]||'').toLowerCase();
+    let key=String(q[field]||'').toLowerCase();
+    if(field==='type')key=normType(key);
     if(!buckets[key])return;
     buckets[key].total++;
     if(S.answers[i]!==undefined && S.answers[i]===q.ans)buckets[key].correct++;
@@ -4407,13 +4424,12 @@ function computeBuckets(field,order){
 // above — every claim cites an actual percentage, so nothing here can
 // silently drift from the bars/columns built on the same buckets. Not a
 // sentiment/vibe summary: it compares Simple vs Hard performance (depth
-// of understanding vs memorisation) and knowledge-type (Theoretical+
-// Applied) vs field-type (Practical+Scenario-based) performance
-// (textbook knowledge vs real judgement), then ties both to the pass/
-// fail verdict. Falls back to a plain note if this discipline isn't
-// tagged yet, rather than fabricating an analysis from nothing. Returns
-// an array of plain-text sentences — buildReport() wraps them in an
-// HTML block, submitToSheets() joins them as plain text for the Sheet.
+// of understanding vs memorisation) and Theoretical vs Practical
+// performance (textbook knowledge vs real judgement), then ties both to
+// the pass/fail verdict. Falls back to a plain note if this discipline
+// isn't tagged yet, rather than fabricating an analysis from nothing.
+// Returns an array of plain-text sentences — buildReport() wraps them in
+// an HTML block, submitToSheets() joins them as plain text for the Sheet.
 function computeCandidateAnalysisSentences(){
   const diffB=computeBuckets('difficulty',DIFF_ORDER);
   const typeB=computeBuckets('type',TYPE_ORDER);
@@ -4439,26 +4455,24 @@ function computeCandidateAnalysisSentences(){
     sentences.push(`Moderate-difficulty questions were answered at ${modPct}%.`);
   }
 
-  const knowCorrect=typeB.theoretical.correct+typeB.applied.correct;
-  const knowTotal=typeB.theoretical.total+typeB.applied.total;
-  const fieldCorrect=typeB.practical.correct+typeB.scenario.correct;
-  const fieldTotal=typeB.practical.total+typeB.scenario.total;
+  const knowCorrect=typeB.theoretical.correct, knowTotal=typeB.theoretical.total;
+  const fieldCorrect=typeB.practical.correct, fieldTotal=typeB.practical.total;
   if(knowTotal>0 && fieldTotal>0){
     const knowPct=Math.round((knowCorrect/knowTotal)*100);
     const fieldPct=Math.round((fieldCorrect/fieldTotal)*100);
     const gap=knowPct-fieldPct;
     if(gap>=20){
-      sentences.push(`Knowledge-based questions (Theoretical/Applied: ${knowPct}%) scored well above practical/judgement-based questions (Practical/Scenario-based: ${fieldPct}%) — the candidate appears to know the codes and definitions but has shown less consistent field judgement in this assessment. Recommend probing real-world decision-making at interview before relying on this profile for a hands-on supervisory role.`);
+      sentences.push(`Theoretical questions (${knowPct}%) scored well above Practical questions (${fieldPct}%) — the candidate appears to know the codes and definitions but has shown less consistent field judgement in this assessment. Recommend probing real-world decision-making at interview before relying on this profile for a hands-on supervisory role.`);
     } else if(gap<=-20){
-      sentences.push(`The candidate scored notably higher on practical/judgement-based questions (Practical/Scenario-based: ${fieldPct}%) than on knowledge-based ones (Theoretical/Applied: ${knowPct}%) — indicative of real field experience and sound on-site judgement, even where specific code references weren't always recalled precisely. Code values can be looked up on the job; this kind of judgement typically can't.`);
+      sentences.push(`The candidate scored notably higher on Practical questions (${fieldPct}%) than on Theoretical ones (${knowPct}%) — indicative of real field experience and sound on-site judgement, even where specific code references weren't always recalled precisely. Code values can be looked up on the job; this kind of judgement typically can't.`);
     } else {
-      sentences.push(`Knowledge-based and practical/judgement-based performance were broadly balanced (Theoretical/Applied ${knowPct}% vs Practical/Scenario-based ${fieldPct}%), suggesting the candidate's textbook knowledge and field judgement are aligned.`);
+      sentences.push(`Theoretical and Practical performance were broadly balanced (${knowPct}% vs ${fieldPct}%), suggesting the candidate's textbook knowledge and field judgement are aligned.`);
     }
   }
 
   if(S.passed){
     sentences.push(hardPct!==null&&hardPct<50
-      ? `Combined with the overall result (${S.pct}%, PASS), this profile still warrants a closer look at the specific Hard/Scenario-based questions missed before final sign-off.`
+      ? `Combined with the overall result (${S.pct}%, PASS), this profile still warrants a closer look at the specific Hard/Practical questions missed before final sign-off.`
       : `Combined with the overall result (${S.pct}%, PASS), this profile supports the reading above.`);
   } else {
     sentences.push(`Combined with the overall result (${S.pct}%, FAIL), the weakest area(s) identified above are the most direct explanation for the shortfall, and the natural focus for any future re-assessment or targeted training.`);
@@ -4651,7 +4665,7 @@ function buildReport(){
       </div>
       <div>
         <div class="r-sec-lbl">By Question Type</div>
-        <div class="sv-bars">${tagBreakdownHtml('type',TYPE_ORDER,{theoretical:'Theoretical',applied:'Applied',practical:'Practical',scenario:'Scenario-based'})}</div>
+        <div class="sv-bars">${tagBreakdownHtml('type',TYPE_ORDER,{theoretical:'Theoretical',practical:'Practical'})}</div>
       </div>
     </div>
     <div class="r-divider"></div>
