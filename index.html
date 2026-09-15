@@ -3823,6 +3823,39 @@ function debouncedLog(key,evt,ms=8000){
 function handleViolationEscalation(evt){
   showViolationModal(evt);
 }
+/* A candidate who leaves the exam window and just stays away (switches to
+   Word, scrolls around, opens other tabs/apps on a second monitor) should
+   not be able to sit there violation-free between the moment they leave
+   and the moment they come back — but a LIVE timer that "ticks" every few
+   seconds while they're gone can't be trusted: browsers deliberately
+   throttle setInterval/setTimeout in a backgrounded tab to save power, so
+   it can silently stop firing (or fire far less often) for exactly as long
+   as the candidate is away, which is the one time it matters most. Instead
+   of relying on a timer ticking DURING the absence, this records the exact
+   moment they leave (an ordinary focus/visibility event — not a timer, so
+   never throttled) and, the moment they come back, credits violations
+   retroactively from the real wall-clock gap between those two events.
+   A 47-second trip to Word becomes ~9 backfilled violations the instant
+   they return, regardless of how the tab was throttled while they were
+   gone. */
+let _awayStartedAt=null;
+function markAway(){
+  if(_awayStartedAt==null)_awayStartedAt=Date.now();
+}
+function markBack(){
+  if(_awayStartedAt==null)return;
+  const awaySecs=Math.round((Date.now()-_awayStartedAt)/1000);
+  _awayStartedAt=null;
+  if(!examInProgress)return;
+  if(awaySecs<2)return; // an instant tab flick is already covered by the single edge violation below
+  const credits=Math.max(1,Math.floor(awaySecs/5)); // one violation per 5s away
+  for(let i=0;i<credits;i++){
+    S.blurCount++;
+    S.forensics.push({ts:new Date().toLocaleTimeString('en-GB'),ev:'Away from exam window (backfilled)'});
+  }
+  updateProctorBadge();
+  handleViolationEscalation('Away from the exam for '+awaySecs+'s — '+credits+' violation(s) recorded.');
+}
 function showViolationModal(evt){
   const bg=$('viol-bg'); if(!bg) return;
   if($('viol-count'))$('viol-count').textContent=`(${S.blurCount})`;
@@ -3840,25 +3873,13 @@ function acknowledgeViolation(){
     if(req) req.call(el).catch(()=>{});
   }catch(e){}
 }
-let _awayInt=null;
 function attachProctoring(){
-  document.addEventListener('visibilitychange',()=>{if(document.hidden)debouncedLog('vis','Tab switched / hidden',8000);});
-  window.addEventListener('blur',()=>debouncedLog('blur','Window lost focus',8000));
-  // blur/visibilitychange above only fire on the EDGE of leaving the exam
-  // window — a candidate who alt-tabs to a second monitor and then just
-  // stays there, clicking around in another app without ever touching the
-  // exam window again, produces no further DOM events at all, so nothing
-  // re-logs for as long as they remain away. This heartbeat re-checks
-  // focus every few seconds for the whole time the exam is in progress and
-  // keeps logging while the candidate is still away, so an extended
-  // absence shows up as repeated violations in the report rather than one.
-  clearInterval(_awayInt);
-  _awayInt=setInterval(()=>{
-    if(!examInProgress)return;
-    if(document.hidden||!document.hasFocus()){
-      debouncedLog('away','Away from exam — window still not focused',4000);
-    }
-  },4000);
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden){debouncedLog('vis','Tab switched / hidden',8000);markAway();}
+    else{markBack();}
+  });
+  window.addEventListener('blur',()=>{debouncedLog('blur','Window lost focus',8000);markAway();});
+  window.addEventListener('focus',()=>{markBack();});
   document.addEventListener('keydown',e=>{
     if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
     const blocked=e.key==='F12'||(e.altKey&&e.key==='Tab')
@@ -4104,9 +4125,9 @@ let _submitStarted=false;
 function beginFinalSubmit(){
   if(_submitStarted)return;
   _submitStarted=true;
+  markBack(); // credit any absence still in progress (e.g. timer ran out while the candidate was away) before the exam officially ends
   examInProgress=false;
   clearInterval(S.timerRef);
-  clearInterval(_awayInt);
   clearTimeout(_syncRetryTimer);
   setConnBanner(true); // don't leave the mid-exam banner stuck on past this point —
   goto('s-thanks');    // finaliseExam()'s own grade/submit retries surface separately
