@@ -127,7 +127,7 @@ interior/desert rock terrain, not coastal, despite being a luxury resort).
 ## Divisions & Disciplines (source of truth: `DISC_MAP` in index.html)
 
 ### Construction Supervision
-Architectural, Civil, Contracts, Document Controller, Electrical,
+Architectural, Civil, Contracts, Document Controller, Electrical, ELV,
 Environmental, HSE, Infrastructure, Landscape, Mechanical, Planning, QS,
 Structural, Sustainability, Testing & Commissioning
 
