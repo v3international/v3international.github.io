@@ -3202,7 +3202,7 @@ function setConnBanner(ok){
   el.classList.toggle('on',!ok);
 }
 function doSyncAnswer(){
-  if(!S.tokenId)return;
+  if(!S.tokenId||!examInProgress)return;
   gsPost({action:'sync_answer',token:S.tokenId,answers:S.answers,skipped:S.skipped,justifications:S.justifications})
     .then(r=>{
       if(r===null){ // gsPost() returns null on any network/fetch failure
@@ -4129,6 +4129,20 @@ function beginFinalSubmit(){
   examInProgress=false;
   clearInterval(S.timerRef);
   clearTimeout(_syncRetryTimer);
+  // A pending debounced autosave (syncAnswerRemote()'s 500ms setTimeout,
+  // scheduled on the candidate's last answer change) used to survive past
+  // submission unguarded — examInProgress flips false here, but nothing
+  // cancelled that timer or stopped doSyncAnswer() itself from firing once
+  // it did. A stray sync_answer request could then land on the server at
+  // the exact same time as finaliseExam()'s own exam_result/video/report
+  // sequence — two concurrent doPost calls hitting the same Sheet, which
+  // is exactly the kind of Apps Script concurrency collision that can make
+  // one of them throw. doSyncAnswer() now also checks examInProgress
+  // itself as a second guard, for the narrower case where a sync request
+  // is already in flight (mid-fetch) at the moment Submit is clicked —
+  // that one can't be cancelled, but at least nothing new gets scheduled
+  // after it.
+  clearTimeout(_syncAnsTimer);
   setConnBanner(true); // don't leave the mid-exam banner stuck on past this point —
   goto('s-thanks');    // finaliseExam()'s own grade/submit retries surface separately
   Promise.resolve(finaliseExam()).catch(e=>console.error(e));
