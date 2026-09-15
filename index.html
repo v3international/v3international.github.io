@@ -3840,9 +3840,25 @@ function acknowledgeViolation(){
     if(req) req.call(el).catch(()=>{});
   }catch(e){}
 }
+let _awayInt=null;
 function attachProctoring(){
   document.addEventListener('visibilitychange',()=>{if(document.hidden)debouncedLog('vis','Tab switched / hidden',8000);});
   window.addEventListener('blur',()=>debouncedLog('blur','Window lost focus',8000));
+  // blur/visibilitychange above only fire on the EDGE of leaving the exam
+  // window — a candidate who alt-tabs to a second monitor and then just
+  // stays there, clicking around in another app without ever touching the
+  // exam window again, produces no further DOM events at all, so nothing
+  // re-logs for as long as they remain away. This heartbeat re-checks
+  // focus every few seconds for the whole time the exam is in progress and
+  // keeps logging while the candidate is still away, so an extended
+  // absence shows up as repeated violations in the report rather than one.
+  clearInterval(_awayInt);
+  _awayInt=setInterval(()=>{
+    if(!examInProgress)return;
+    if(document.hidden||!document.hasFocus()){
+      debouncedLog('away','Away from exam — window still not focused',4000);
+    }
+  },4000);
   document.addEventListener('keydown',e=>{
     if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
     const blocked=e.key==='F12'||(e.altKey&&e.key==='Tab')
@@ -4090,6 +4106,7 @@ function beginFinalSubmit(){
   _submitStarted=true;
   examInProgress=false;
   clearInterval(S.timerRef);
+  clearInterval(_awayInt);
   clearTimeout(_syncRetryTimer);
   setConnBanner(true); // don't leave the mid-exam banner stuck on past this point —
   goto('s-thanks');    // finaliseExam()'s own grade/submit retries surface separately
