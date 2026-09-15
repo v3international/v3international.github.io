@@ -3714,6 +3714,18 @@ let examInProgress=false;
 // fresh-start behaviour.
 async function startExam(resumeSecsLeft){
   const isResume=resumeSecsLeft!=null;
+  // Request fullscreen FIRST, synchronously, before anything awaits —
+  // Firefox (unlike Chromium) only honours requestFullscreen() while
+  // still inside the original user-gesture call stack; once an `await`
+  // below yields to the event loop (e.g. the startExamRemote() network
+  // round-trip), Firefox silently refuses it with no error, so a fresh
+  // exam start would never actually reach fullscreen there. Best-effort —
+  // silently ignored if the browser refuses (e.g. no gesture on resume).
+  try{
+    const el=document.documentElement;
+    const req=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||el.msRequestFullscreen;
+    if(req) req.call(el).catch(()=>{});
+  }catch(e){}
   // A fresh online-link or in-person session deliberately arrives here
   // with S.qs still null — initTokenMode()/launchSession() skipped
   // locking the token and starting the server clock so that merely
@@ -3760,12 +3772,6 @@ async function startExam(resumeSecsLeft){
     if(S.secsLeft<=0){clearInterval(S.timerRef);$('tol').classList.add('on');setTimeout(()=>{$('tol').classList.remove('on');beginFinalSubmit();},3200);}
   },1000);
   attachProctoring();startVideoRecording();initAIProctoring();
-  // Request fullscreen — best-effort (silently ignored if browser refuses)
-  try{
-    const el=document.documentElement;
-    const req=el.requestFullscreen||el.webkitRequestFullscreen||el.mozRequestFullScreen||el.msRequestFullscreen;
-    if(req) req.call(el).catch(()=>{});
-  }catch(e){}
   goto('s-exam');renderQ(isResume?firstUnansweredIdx():0);
 }
 function firstUnansweredIdx(){
@@ -3796,8 +3802,14 @@ function debouncedLog(key,evt,ms=8000){
   if(!examInProgress)return;
   const now=Date.now();
   if(_deb[key]&&now-_deb[key]<ms)return;
-  _deb[key]=now;
+  // Only arm this key's own cooldown once the violation actually gets
+  // logged below — stamping it on a COALESCED (suppressed) hit as well
+  // meant a burst of mixed event types (blur+vis firing together from one
+  // tab-switch, then again from the next) could keep re-arming every
+  // key's cooldown without ever actually logging a second violation,
+  // making real subsequent violations go silently undetected.
   if(now-_lastViolationAt<COALESCE_MS)return;
+  _deb[key]=now;
   _lastViolationAt=now;
   S.blurCount++;S.forensics.push({ts:new Date().toLocaleTimeString('en-GB'),ev:evt});
   updateProctorBadge();
