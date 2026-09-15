@@ -4493,6 +4493,14 @@ async function generateAndUploadPdf(){
     }
   }catch(err){
     console.error('V3: generateAndUploadPdf:', err.message);
+    // buildReport() (or anything else above) threw before a network call
+    // was ever made — the server-side self-flagging in handlePdfUpload()'s
+    // own catch block can't help here since it never got a request to
+    // catch. Flag it from this side instead: single-shot, not retried
+    // (gsPostWithRetry would just hit the same client-side exception
+    // again), so the Drive Report cell still ends up saying WHY it's
+    // empty instead of just staying blank.
+    gsPost({action:'flag_report_failed',email:S.email,submissionTs:S.submissionTs,sheetRow:S.sheetRow||null,reason:String(err.message||err)});
   }
 }
 
