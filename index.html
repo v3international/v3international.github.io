@@ -4447,42 +4447,10 @@ async function generateAndUploadPdf(){
     // Report body from DOM — logos already have base64 src from injectLogos()
     const bodyHtml = rptEl.innerHTML;
 
-    // Powers unlockQA() (see qaGate() in buildReport()) — the exported
-    // file is otherwise plain static HTML with no script at all, so this
-    // is the only JS shipped with it. The closing script tag below is
-    // built from two concatenated string pieces, not written whole —
-    // HTML's parser ends a script element on that exact character
-    // sequence wherever it appears in the text, comments included, with
-    // no regard for JS syntax, so writing it whole here would truncate
-    // THIS file's own surrounding script element right at this point.
-    const REPORT_JS = '\n<script>\n'
-      + 'function unlockQA(btn){\n'
-      + '  var wrap=btn.closest(".qa-locked");\n'
-      + '  var input=wrap.querySelector(".qa-pass-input");\n'
-      + '  var errEl=wrap.querySelector(".qa-pass-err");\n'
-      + '  var pass=input.value;\n'
-      + '  errEl.style.display="none";\n'
-      + '  btn.disabled=true;btn.textContent="Checking…";\n'
-      // role=master, not 'admin' — 'admin' is a genuinely separate password
-      // (Master → Credentials → "New Admin Password") that's never actually
-      // been set up in this workflow, so every unlock attempt here failed
-      // no matter what the Master typed. 'master' is the one credential
-      // that's actually in regular use.
-      + '  fetch(' + JSON.stringify(CFG.GS_ENDPOINT) + '+"?action=verify_pass&role=master&pass="+encodeURIComponent(pass),{method:"GET"})\n'
-      + '    .then(function(r){return r.text();})\n'
-      + '    .then(function(t){\n'
-      + '      var data=JSON.parse(t);\n'
-      + '      if(data&&data.ok){\n'
-      + '        document.querySelectorAll(".qa-locked").forEach(function(el){el.style.display="none";});\n'
-      + '        document.querySelectorAll(".qa-real-content").forEach(function(el){el.style.display="block";});\n'
-      + '      }else{\n'
-      + '        errEl.style.display="block";btn.disabled=false;btn.textContent="Unlock";\n'
-      + '      }\n'
-      + '    })\n'
-      + '    .catch(function(){errEl.style.display="block";btn.disabled=false;btn.textContent="Unlock";});\n'
-      + '}\n'
-      + '<' + '/script>';
-
+    // No longer any script shipped with the exported report — it used to
+    // power unlockQA() for the Q&A passkey gate, removed at the Master's
+    // request (see qaGate() in buildReport()). The file is now plain
+    // static HTML.
     const reportHtml = '<!DOCTYPE html>'
       + '<html lang="en"><head><meta charset="UTF-8">'
       + '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
@@ -4491,7 +4459,6 @@ async function generateAndUploadPdf(){
       + '</head>'
       + '<body>'
       + bodyHtml
-      + REPORT_JS
       + '</body></html>';
 
     console.log('V3: report ~' + Math.round(reportHtml.length/1024) + 'KB');
@@ -4681,21 +4648,11 @@ function buildReport(){
     <span>V3 Middle East Engineering Consultants Co. &nbsp;|&nbsp; <span class="gd">Visio · Vertere · Virtute</span> &nbsp;|&nbsp; v3international.com &nbsp;|&nbsp; Generated ${dateStr} ${timeStr}</span>
     <span class="pgn">Page ${n} of ${tot}</span>
   </div>`;}
-  // Wraps the Q&A table so it's hidden by default in the exported report —
-  // most people reviewing results only need the summary/score, not the
-  // full answer key. unlockQA() (defined in generateAndUploadPdf(), only
-  // present in the exported standalone file) reveals it on passkey entry.
-  function qaGate(tableHtml){return `<div class="qa-locked">
-      <div class="qa-lock-icon">🔒</div>
-      <div class="qa-lock-title">Detailed Q&amp;A Breakdown — Hidden</div>
-      <div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Master passkey to review them for this candidate.</div>
-      <div class="qa-pass-row">
-        <input type="password" class="qa-pass-input" placeholder="Master passkey" onkeydown="if(event.key==='Enter')unlockQA(this.nextElementSibling)">
-        <button class="qa-unlock-btn" onclick="unlockQA(this)">Unlock</button>
-      </div>
-      <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>
-    </div>
-    <div class="qa-real-content" style="display:none">${tableHtml}</div>`;}
+  // Used to gate the Q&A table behind a passkey — removed at the Master's
+  // request: the report is only ever generated/reviewed by people who
+  // should see it, and the gate was extra friction with no real benefit.
+  // Now just passes the table straight through.
+  function qaGate(tableHtml){return tableHtml;}
 
   // Buckets with zero questions are omitted rather than shown as a
   // misleading 0/0 row — relevant for any discipline not yet tagged with
