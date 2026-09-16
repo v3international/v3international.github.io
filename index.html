@@ -4463,7 +4463,12 @@ async function generateAndUploadPdf(){
       + '  var pass=input.value;\n'
       + '  errEl.style.display="none";\n'
       + '  btn.disabled=true;btn.textContent="Checking…";\n'
-      + '  fetch(' + JSON.stringify(CFG.GS_ENDPOINT) + '+"?action=verify_pass&role=admin&pass="+encodeURIComponent(pass),{method:"GET"})\n'
+      // role=master, not 'admin' — 'admin' is a genuinely separate password
+      // (Master → Credentials → "New Admin Password") that's never actually
+      // been set up in this workflow, so every unlock attempt here failed
+      // no matter what the Master typed. 'master' is the one credential
+      // that's actually in regular use.
+      + '  fetch(' + JSON.stringify(CFG.GS_ENDPOINT) + '+"?action=verify_pass&role=master&pass="+encodeURIComponent(pass),{method:"GET"})\n'
       + '    .then(function(r){return r.text();})\n'
       + '    .then(function(t){\n'
       + '      var data=JSON.parse(t);\n'
@@ -4683,9 +4688,9 @@ function buildReport(){
   function qaGate(tableHtml){return `<div class="qa-locked">
       <div class="qa-lock-icon">🔒</div>
       <div class="qa-lock-title">Detailed Q&amp;A Breakdown — Hidden</div>
-      <div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Admin passkey to review them for this candidate.</div>
+      <div class="qa-lock-desc">Individual questions and correct answers are hidden by default. Enter the Master passkey to review them for this candidate.</div>
       <div class="qa-pass-row">
-        <input type="password" class="qa-pass-input" placeholder="Admin passkey" onkeydown="if(event.key==='Enter')unlockQA(this.nextElementSibling)">
+        <input type="password" class="qa-pass-input" placeholder="Master passkey" onkeydown="if(event.key==='Enter')unlockQA(this.nextElementSibling)">
         <button class="qa-unlock-btn" onclick="unlockQA(this)">Unlock</button>
       </div>
       <div class="qa-pass-err">Incorrect password, or could not reach the verification server.</div>
