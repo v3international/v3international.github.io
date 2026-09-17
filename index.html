@@ -4238,12 +4238,23 @@ async function finaliseExam(){
   // Step 1: write the exam row to the sheet and WAIT for confirmation
   const sheetResult = await submitToSheets();
 
-  // Tell the candidate the real outcome now, instead of the old static
-  // "securely recorded" message that showed unconditionally regardless
-  // of whether anything actually saved — that false-positive is exactly
-  // how a mid-exam connection drop can go unnoticed until days later.
-  if(sheetResult?.ok) setThanksState(S.gradingFailed ? 'warn' : 'ok');
-  else setThanksState('fail');
+  // BUG THIS FIXES (found via a real candidate whose video AND report both
+  // ended up permanently missing, twice): the final "you may now close this
+  // window" message used to appear right here, the instant Step 1 finished —
+  // before Step 2 (video) and Step 3 (report) had even started. A candidate
+  // taking that literally and closing the tab immediately (exactly what
+  // happened) kills the in-flight video/report uploads with zero trace: no
+  // error, no retry, nothing written anywhere, because the JS simply stops
+  // running. The score row was fine — only the two things that upload AFTER
+  // it were lost. Fix: show a "please wait, still finishing" state now
+  // (truthful — the answers ARE safely recorded, but nothing here invites
+  // closing yet), keep a beforeunload guard up while Steps 2–3 run, and only
+  // show the real "you may now close this window" message once every upload
+  // this exam produces has actually finished.
+  if(sheetResult?.ok) setThanksState(S.gradingFailed ? 'warn-wait' : 'ok-wait');
+  else setThanksState('fail'); // already tells them not to close — unchanged
+
+  if(sheetResult?.ok) window.addEventListener('beforeunload', _finalizeUnloadGuard);
 
   // Step 2: upload the video now that the row is confirmed to exist.
   // This used to fire independently, as soon as the recording finished —
@@ -4263,21 +4274,41 @@ async function finaliseExam(){
 
   // Step 3: build report card HTML and upload — writes Drive Report link back to sheet
   await generateAndUploadPdf();
+
+  // Everything this exam produces has now either uploaded or self-flagged
+  // its own failure server-side (see handleVideoUpload/handlePdfUpload) —
+  // safe to lift the guard and tell the candidate they can actually close.
+  if(sheetResult?.ok){
+    window.removeEventListener('beforeunload', _finalizeUnloadGuard);
+    setThanksState(S.gradingFailed ? 'warn' : 'ok');
+  }
 }
+// Browser-native "are you sure you want to leave?" prompt, active only
+// between Step 1 finishing and Steps 2–3 finishing (see finaliseExam()).
+// Modern browsers ignore custom text and show their own generic wording,
+// but still require preventDefault()/returnValue to trigger the prompt at
+// all — this is that minimum, not a custom message.
+function _finalizeUnloadGuard(e){ e.preventDefault(); e.returnValue=''; return ''; }
 // Updates the post-exam screen to reflect what actually happened, instead
 // of the old unconditional "Your responses have been securely recorded"
-// message. 'ok' = Sheet write confirmed and grading succeeded; 'warn' =
-// Sheet write confirmed but the score couldn't be confirmed with the
-// server (flagged 'GRADING FAILED — CONTACT IT' in the row itself); 'fail'
-// = the Sheet write itself never confirmed even after all retries, so the
-// candidate needs to flag this to a human right away rather than walk away
-// thinking they're done.
+// message. 'ok-wait'/'warn-wait' = Sheet write confirmed, video/report
+// uploads still in progress — candidate must NOT close yet. 'ok' = every
+// upload this exam produces has finished. 'warn' = Sheet write confirmed
+// but the score couldn't be confirmed with the server (flagged 'GRADING
+// FAILED — CONTACT IT' in the row itself). 'fail' = the Sheet write itself
+// never confirmed even after all retries, so the candidate needs to flag
+// this to a human right away rather than walk away thinking they're done.
 function setThanksState(state){
   const icon=$('thanks-icon'), title=$('thanks-title'), msg=$('thanks-msg');
   const box=document.querySelector('.thanks-box');
   if(!icon||!title||!msg)return;
   box?.classList.remove('thanks-ok','thanks-warn','thanks-fail');
-  if(state==='ok'){
+  if(state==='ok-wait'||state==='warn-wait'){
+    box?.classList.add('thanks-warn');
+    icon.textContent='⏳';
+    title.textContent='Almost Done — Please Wait';
+    msg.textContent='Your answers have been securely recorded. Your proctoring video and report are still uploading — please keep this window open for a few more seconds. Closing now will lose the video and report permanently.';
+  }else if(state==='ok'){
     box?.classList.add('thanks-ok');
     icon.textContent='✅';
     title.textContent='Submission Received';
